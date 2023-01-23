@@ -18,7 +18,7 @@ class TableConfig {
       required this.columns,
       this.defaultToAllRows = false,
       required this.whereClauses,
-      this.refreshOnKeyUpdateEvent = const[],
+      this.refreshOnKeyUpdateEvent = const [],
       this.formStateConfig,
       required this.sortColumnName,
       required this.sortAscending,
@@ -126,7 +126,7 @@ class ActionConfig {
     }
     if (isEnabledWhenWhereClauseSatisfied != null) {
       return isEnabledWhenWhereClauseSatisfied ==
-          widgetState.dataSource.isWhereClauseSatisfied;
+          widgetState.dataSource.isWhereClauseSatisfiedOrDefaultToAllRows;
     }
     return true;
   }
@@ -140,6 +140,8 @@ class ColumnConfig {
     required this.tooltips,
     required this.isNumeric,
     this.isHidden = false,
+    this.maxLines = 0,
+    this.columnWidth = 0,
   });
   final int index;
   final String name;
@@ -147,6 +149,8 @@ class ColumnConfig {
   final String tooltips;
   final bool isNumeric;
   final bool isHidden;
+  final int maxLines;
+  final double columnWidth;
 }
 
 class WhereClause {
@@ -177,7 +181,6 @@ class DataTableFormStateOtherColumnConfig {
 }
 
 final Map<String, TableConfig> _tableConfigurations = {
-
   // Input Loader Status Data Table
   DTKeys.inputLoaderStatusTable: TableConfig(
     key: DTKeys.inputLoaderStatusTable,
@@ -260,18 +263,26 @@ final Map<String, TableConfig> _tableConfigurations = {
           isNumeric: false),
       ColumnConfig(
           index: 8,
+          name: "error_message",
+          label: 'Error Message',
+          tooltips: 'Error that occured during execution',
+          isNumeric: false,
+          maxLines: 3,
+          columnWidth: 600),
+      ColumnConfig(
+          index: 9,
           name: "session_id",
           label: 'Session ID',
           tooltips: 'Data Pipeline Job Key',
           isNumeric: false),
       ColumnConfig(
-          index: 9,
+          index: 10,
           name: "user_email",
           label: 'User',
           tooltips: 'Who loaded the file',
           isNumeric: false),
       ColumnConfig(
-          index: 10,
+          index: 11,
           name: "last_update",
           label: 'Loaded At',
           tooltips: 'Indicates when the file was loaded',
@@ -429,9 +440,7 @@ final Map<String, TableConfig> _tableConfigurations = {
     isCheckboxVisible: false,
     isCheckboxSingleSelect: true,
     whereClauses: [
-      WhereClause(
-          column: "session_id",
-          formStateKey: FSK.sessionId),
+      WhereClause(column: "session_id", formStateKey: FSK.sessionId),
     ],
     actions: [],
     formStateConfig:
@@ -464,48 +473,56 @@ final Map<String, TableConfig> _tableConfigurations = {
           isNumeric: false),
       ColumnConfig(
           index: 4,
+          name: "error_message",
+          label: 'Error Message',
+          tooltips: 'Error that occured during execution',
+          isNumeric: false,
+          maxLines: 3,
+          columnWidth: 600),
+      ColumnConfig(
+          index: 5,
           name: "shard_id",
           label: 'Shard ID',
           tooltips: 'Pipeline shard ID',
           isNumeric: true),
       ColumnConfig(
-          index: 5,
+          index: 6,
           name: "input_records_count",
           label: 'Input Records Count',
           tooltips: 'Number of input records',
           isNumeric: true),
       ColumnConfig(
-          index: 6,
+          index: 7,
           name: "rete_sessions_count",
           label: 'Rete Sessions Count',
           tooltips: 'Number of rete sessions',
           isNumeric: true),
       ColumnConfig(
-          index: 7,
+          index: 8,
           name: "output_records_count",
           label: 'Output Records Count',
           tooltips: 'Number of output records',
           isNumeric: true),
       ColumnConfig(
-          index: 8,
+          index: 9,
           name: "main_input_session_id",
           label: 'Input Session ID',
           tooltips: 'Session ID of main input table',
           isNumeric: false),
       ColumnConfig(
-          index: 9,
+          index: 10,
           name: "session_id",
           label: 'Session ID',
           tooltips: 'Data Pipeline session ID',
           isNumeric: false),
       ColumnConfig(
-          index: 10,
+          index: 11,
           name: "user_email",
           label: 'User',
           tooltips: 'Who started the pipeline',
           isNumeric: false),
       ColumnConfig(
-          index: 11,
+          index: 12,
           name: "last_update",
           label: 'Loaded At',
           tooltips: 'Indicates when the file was loaded',
@@ -645,8 +662,7 @@ final Map<String, TableConfig> _tableConfigurations = {
     defaultToAllRows: true, // when where clause fails
     whereClauses: [
       WhereClause(column: "client", formStateKey: FSK.client),
-      WhereClause(
-          column: "object_type", formStateKey: FSK.objectType),
+      WhereClause(column: "object_type", formStateKey: FSK.objectType),
     ],
     actions: [
       ActionConfig(
@@ -657,13 +673,12 @@ final Map<String, TableConfig> _tableConfigurations = {
           style: ActionStyle.primary,
           isEnabledWhenHavingSelectedRows: true),
     ],
-    formStateConfig:
-        DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
-          DataTableFormStateOtherColumnConfig(
-            stateKey: FSK.fileKey,
-            columnIdx: 3,
-          ),
-        ]),
+    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
+      DataTableFormStateOtherColumnConfig(
+        stateKey: FSK.fileKey,
+        columnIdx: 3,
+      ),
+    ]),
     columns: [
       ColumnConfig(
           index: 0,
@@ -822,19 +837,19 @@ final Map<String, TableConfig> _tableConfigurations = {
     whereClauses: [],
     actions: [
       ActionConfig(
-        actionType: DataTableActionType.showDialog,
-        key: 'addSourceConfig',
-        label: 'Add/Update Source Config',
-        style: ActionStyle.primary,
-        isVisibleWhenCheckboxVisible: null,
-        isEnabledWhenHavingSelectedRows: null,
-        configForm: FormKeys.addSourceConfig,
-        navigationParams: {
-          FSK.key: 0,
-          FSK.client: 1,
-          FSK.objectType: 2,
-          FSK.domainKeysJson: 4,
-        }),
+          actionType: DataTableActionType.showDialog,
+          key: 'addSourceConfig',
+          label: 'Add/Update Source Config',
+          style: ActionStyle.primary,
+          isVisibleWhenCheckboxVisible: null,
+          isEnabledWhenHavingSelectedRows: null,
+          configForm: FormKeys.addSourceConfig,
+          navigationParams: {
+            FSK.key: 0,
+            FSK.client: 1,
+            FSK.objectType: 2,
+            FSK.domainKeysJson: 4,
+          }),
       ActionConfig(
           actionType: DataTableActionType.showDialog,
           key: 'addClient',
@@ -889,7 +904,7 @@ final Map<String, TableConfig> _tableConfigurations = {
           index: 4,
           name: "domain_keys_json",
           label: 'Domain Keys (json)',
-          tooltips: 'Column(s) for row''s domain key(s) (json-encoded string)',
+          tooltips: 'Column(s) for row' 's domain key(s) (json-encoded string)',
           isNumeric: false),
       ColumnConfig(
           index: 5,
@@ -1480,11 +1495,10 @@ final Map<String, TableConfig> _tableConfigurations = {
           isVisibleWhenCheckboxVisible: null,
           isEnabledWhenHavingSelectedRows: null),
     ],
-    formStateConfig:
-      DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
-        DataTableFormStateOtherColumnConfig(
+    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
+      DataTableFormStateOtherColumnConfig(
           stateKey: FSK.mainInputFileKey, columnIdx: 3),
-      ]),
+    ]),
     columns: [
       ColumnConfig(
           index: 0,
@@ -1562,11 +1576,10 @@ final Map<String, TableConfig> _tableConfigurations = {
       WhereClause(column: "object_type", formStateKey: FSK.mainObjectType),
     ],
     actions: [],
-    formStateConfig:
-      DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
-        DataTableFormStateOtherColumnConfig(
+    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
+      DataTableFormStateOtherColumnConfig(
           stateKey: FSK.mainInputFileKey, columnIdx: 3),
-      ]),
+    ]),
     columns: [
       ColumnConfig(
           index: 0,
@@ -1798,11 +1811,9 @@ final Map<String, TableConfig> _tableConfigurations = {
           isEnabledWhenHavingSelectedRows: true,
           actionName: ActionKeys.deleteUser),
     ],
-    formStateConfig:
-        DataTableFormStateConfig(keyColumnIdx: 1, otherColumns: [
-          DataTableFormStateOtherColumnConfig(
-              stateKey: FSK.isActive, columnIdx: 2),
-        ]),
+    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 1, otherColumns: [
+      DataTableFormStateOtherColumnConfig(stateKey: FSK.isActive, columnIdx: 2),
+    ]),
     columns: [
       ColumnConfig(
           index: 0,

@@ -198,7 +198,7 @@ func main() {
 	}
 	if *initWorkspaceDb && *jetsapiDbInitPath == "" {
 		hasErr = true
-		errMsg = append(errMsg, "jetsapi dn init path (-jetsapiDbInitPath) must be provided when -initWorkspaceDb is provided.")
+		errMsg = append(errMsg, "jetsapi dn init path (-jetsapiDbInitPath or env JETSAPI_DB_INIT_PATH) must be provided when -initWorkspaceDb is provided.")
 	}
 	if *workspaceDb == "" {
 		*workspaceDb = os.Getenv("WORKSPACE_DB_PATH")
@@ -210,7 +210,6 @@ func main() {
 		errMsg = append(errMsg, "jetsapi init db path (-jetsapiDbInitPath) must be provided.")
 	}
 	if hasErr {
-		flag.Usage()
 		for _, msg := range errMsg {
 			log.Println("**", msg)
 		}
@@ -234,7 +233,6 @@ func main() {
 	//let's do it
 	err = doJob()
 	if err != nil {
-		flag.Usage()
 		fmt.Println(err)
 		panic(err)
 	}

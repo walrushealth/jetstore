@@ -19,7 +19,8 @@ class JetsDataTableSource extends ChangeNotifier {
 
   int get rowCount => model != null ? model!.length : 0;
   int get totalRowCount => _totalRowCount;
-  bool get isWhereClauseSatisfied =>
+  bool get isWhereClauseSatisfied => _whereClauseSatisfied;
+  bool get isWhereClauseSatisfiedOrDefaultToAllRows =>
       _whereClauseSatisfied || state.tableConfig.defaultToAllRows;
 
   /// returns true if table has selected row(s)
@@ -195,10 +196,13 @@ class JetsDataTableSource extends ChangeNotifier {
       }),
       cells: state.columnsConfig
           .where((e) => !e.isHidden)
-          .map((e) => DataCell(Text(model![index][e.index] ?? 'null')))
+          .map((e) => e.maxLines > 0 ? DataCell(SizedBox(
+              width: e.columnWidth, //SET width
+              child: Text(model![index][e.index] ?? 'null', maxLines: e.maxLines,)))
+              : DataCell(Text(model![index][e.index] ?? 'null')))
           .toList(),
       selected: selectedRows[index],
-      onSelectChanged: state.isTableEditable
+      onSelectChanged: state.isTableEditable && isWhereClauseSatisfied
           ? (bool? value) {
               if (value == null) return;
               _onSelectChanged(index, value);
@@ -364,7 +368,10 @@ class JetsDataTableSource extends ChangeNotifier {
                 name: m1['name'],
                 label: m1['label'],
                 tooltips: m1['tooltips'],
-                isNumeric: m1['isnumeric']))
+                isNumeric: m1['isnumeric'],
+                maxLines: m1['maxLines'],
+                columnWidth: m1['columnWidth'],
+                ))
             .toList();
         state.columnNames = columnDef.map((e) => e['name'] as String).toList();
         state.setSortingColumn(columnIndex: 0);

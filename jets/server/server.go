@@ -32,6 +32,8 @@ type dbConnections struct {
 // JETS_DSN_JSON_VALUE
 // WORKSPACE_DB_PATH location of workspace db (sqlite db)
 // WORKSPACE_LOOKUPS_DB_PATH location of lookup db (sqlite db)
+// JETS_DOMAIN_KEY_HASH_ALGO (values: md5, sha1, none (default))
+// JETS_DOMAIN_KEY_HASH_SEED (required for md5 and sha1. MUST be a valid uuid )
 // GLOG_V log level
 
 // Command Line Arguments
@@ -121,6 +123,8 @@ func doJob() error {
 	log.Printf("Command Line Argument: shardId: %d\n", *shardId)
 	log.Printf("Command Line Argument: workspaceDb: %s\n", *workspaceDb)
 	log.Printf("Command Line Argument: userEmail: %s\n", *userEmail)
+	log.Printf("ENV JETS_DOMAIN_KEY_HASH_ALGO: %s\n",os.Getenv("JETS_DOMAIN_KEY_HASH_ALGO"))
+	log.Printf("ENV JETS_DOMAIN_KEY_HASH_SEED: %s\n",os.Getenv("JETS_DOMAIN_KEY_HASH_SEED"))
 	log.Printf("Command Line Argument: GLOG_v is set to %d\n", glogv)
 	if !*doNotLockSessionId {
 		log.Printf("The sessionId will not be locked and output table will not be registered to input_registry.")

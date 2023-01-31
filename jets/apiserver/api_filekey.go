@@ -83,6 +83,7 @@ func (server *Server) RegisterKeys(w http.ResponseWriter, r *http.Request, regis
 		pipelineConfigKey := make([]int, 0)
 		processNames := make([]string, 0)
 		tableName := make([]string, 0)
+		log.Println("RegisterKeys called w/ client:",client,",object_type:",objectType,",file_key:",fileKey)
 		if len(registerFileKeyAction.ProcessName) > 0 {
 			processNames[0] = registerFileKeyAction.ProcessName
 			var tn string
@@ -136,8 +137,10 @@ func (server *Server) RegisterKeys(w http.ResponseWriter, r *http.Request, regis
 					"object_type":    objectType,
 					"session_id":     strconv.FormatInt(sessionId, 10),
 					"status":         "submitted",
-					"user_email":     "system"},
-				}}
+					"user_email":     "system",
+					"loaderCompletedMetric":"autoLoaderCompleted",
+					"loaderFailedMetric":   "autoLoaderFailed",
+				}}}
 			_, httpStatus, err := server.ProcessInsertRows(&dataTableAction, r)
 			if httpStatus != http.StatusOK {
 				ERROR(w, httpStatus, err)
@@ -162,8 +165,12 @@ func (server *Server) RegisterKeys(w http.ResponseWriter, r *http.Request, regis
 						"input_session_id": strconv.FormatInt(sessionId, 10),
 						"session_id":       strconv.FormatInt(sessionId, 10),
 						"status":           "submitted",
-						"user_email":       "system"},
-				}}
+						"user_email":       "system",
+						"loaderCompletedMetric":  "autoLoaderCompleted",
+						"loaderFailedMetric":     "autoLoaderFailed",
+						"serverCompletedMetric":  "autoServerCompleted",
+						"serverFailedMetric":     "autoServerFailed",
+					}}}
 			_, httpStatus, err = server.ProcessInsertRows(&dataTableAction, r)
 			if httpStatus != http.StatusOK {
 				ERROR(w, httpStatus, err)

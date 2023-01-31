@@ -66,6 +66,8 @@ var userEmail = flag.String("userEmail", "", "User identifier to register the lo
 var nbrShards = flag.Int("nbrShards", 1, "Number of shards to use in sharding the input file")
 var sessionId = flag.String("sessionId", "", "Process session ID, is needed as -inSessionId for the server process (must be unique), default based on timestamp.")
 var doNotLockSessionId = flag.Bool("doNotLockSessionId", false, "Do NOT lock sessionId on sucessful completion (default is to lock the sessionId on successful completion")
+var completedMetric = flag.String("loaderCompletedMetric", "loaderCompleted", "Metric name to register the loader successfull completion (default: loaderCompleted)")
+var failedMetric = flag.String("loaderFailedMetric", "loaderFailed", "Metric name to register the load failure [success load metric: loaderCompleted] (default: loaderFailed)")
 var tableName string
 var domainKeysJson string
 var sep_flag chartype = '€'
@@ -142,13 +144,16 @@ func processFile(dbpool *pgxpool.Pool, fileHd, errFileHd *os.File) (*schema.Head
 		txt := string(buf[0:nb])
 		cn := strings.Count(txt, ",")
 		pn := strings.Count(txt, "|")
-		if cn == pn {
-			return nil, 0, 0, fmt.Errorf("error: cannot determine the csv-delimit used in file %s",*inFile)
-		}
-		if cn > pn {
+		tn := strings.Count(txt, "\t")
+		switch {
+		case (cn > pn) && (cn > tn):
 			sep_flag = ','
-		} else {
+		case (pn > cn) && (pn > tn):
 			sep_flag = '|'
+		case (tn > cn) && (tn > pn):
+			sep_flag = '\t'
+		default:
+			return nil, 0, 0, fmt.Errorf("error: cannot determine the csv-delimit used in file %s",*inFile)
 		}
 		_, err = fileHd.Seek(0, 0)
 		if err != nil {
@@ -391,6 +396,15 @@ func processFileAndReportStatus(dbpool *pgxpool.Pool, fileHd, errFileHd *os.File
 	if err != nil {
 		errMessage = fmt.Sprintf("%v", err)
 	}
+	dimentions := &map[string]string {
+		"client": *client,
+		"object_type": *objectType,
+	}
+	if status == "completed" {
+		awsi.LogMetric(*completedMetric, dimentions, 1)
+	} else {
+		awsi.LogMetric(*failedMetric, dimentions, 1)
+	}
 	err = registerCurrentLoad(copyCount, badRowCount, dbpool, headersDKInfo, status, errMessage)
 	if err != nil {
 		return false, fmt.Errorf("error while registering the load: %v", err)
@@ -599,6 +613,8 @@ func main() {
 	fmt.Println("Got argument: sessionId", *sessionId)
 	fmt.Println("Got argument: doNotLockSessionId", *doNotLockSessionId)
 	fmt.Println("Got argument: usingSshTunnel", *usingSshTunnel)
+	fmt.Println("Got argument: loaderCompletedMetric", *completedMetric)
+	fmt.Println("Got argument: loaderFailedMetric", *failedMetric)
 	fmt.Println("Loader out dir (from env LOADER_ERR_DIR):", errOutDir)
 	if len(errOutDir) == 0 {
 		fmt.Println("Loader error file will be in same directory as input file.")

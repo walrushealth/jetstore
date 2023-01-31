@@ -233,6 +233,7 @@ func (server *Server) InsertRows(w http.ResponseWriter, r *http.Request, dataTab
 // Inserting rows using pre-defined sql statements, keyed by table name provided in dataTableAction
 func (server *Server) ProcessInsertRows(dataTableAction *DataTableAction, r *http.Request) (returnedKey []int, httpStatus int, err error) {
 	returnedKey = make([]int, len(dataTableAction.Data))
+	var loaderCompletedMetric, loaderFailedMetric, serverCompletedMetric, serverFailedMetric string
 	httpStatus = http.StatusOK
 	sqlStmt, ok := sqlInsertStmts[dataTableAction.Table]
 	if !ok {
@@ -319,6 +320,14 @@ func (server *Server) ProcessInsertRows(dataTableAction *DataTableAction, r *htt
 				fileKey := row["file_key"]
 				sessionId := row["session_id"]
 				userEmail := row["user_email"]
+				v = dataTableAction.Data[irow]["loaderFailedMetric"]
+				if v != nil {
+					loaderFailedMetric = v.(string)
+				}
+				v = dataTableAction.Data[irow]["loaderCompletedMetric"]
+				if v != nil {
+					loaderCompletedMetric = v.(string)
+				}
 				if objType == nil || client == nil || fileKey == nil || sessionId == nil || userEmail == nil {
 					log.Printf(
 						"error while preparing to run loader: unexpected nil among: objType: %v, client: %v, fileKey: %v, sessionId: %v, userEmail %v", 
@@ -335,10 +344,18 @@ func (server *Server) ProcessInsertRows(dataTableAction *DataTableAction, r *htt
 					"-userEmail", userEmail.(string), 
 					"-nbrShards", strconv.Itoa(nbrShards),
 				}
+				if loaderCompletedMetric != "" {
+					loaderCommand = append(loaderCommand, "-loaderCompletedMetric")
+					loaderCommand = append(loaderCommand, loaderCompletedMetric)
+				}
+				if loaderFailedMetric != "" {
+					loaderCommand = append(loaderCommand, "-loaderFailedMetric")
+					loaderCommand = append(loaderCommand, loaderFailedMetric)
+				}
 				if row["load_and_start"] == "true" {
 						loaderCommand = append(loaderCommand, "-doNotLockSessionId")
 				}
-			switch {
+				switch {
 				// Call loader synchronously
 				case devMode:
 					if *usingSshTunnel {
@@ -413,6 +430,22 @@ func (server *Server) ProcessInsertRows(dataTableAction *DataTableAction, r *htt
 				fileKey := dataTableAction.Data[irow]["file_key"]
 				sessionId := row["session_id"]
 				userEmail := row["user_email"]
+				v := dataTableAction.Data[irow]["serverFailedMetric"]
+				if v != nil {
+					serverFailedMetric = v.(string)
+				}
+				v = dataTableAction.Data[irow]["serverCompletedMetric"]
+				if v != nil {
+					serverCompletedMetric = v.(string)
+				}
+				v = dataTableAction.Data[irow]["loaderFailedMetric"]
+				if v != nil {
+					loaderFailedMetric = v.(string)
+				}
+				v = dataTableAction.Data[irow]["loaderCompletedMetric"]
+				if v != nil {
+					loaderCompletedMetric = v.(string)
+				}
 				// At minimum check userEmail and sessionId (although the last one is not strictly required since it's in the peKey records)
 				if userEmail == nil || sessionId == nil {
 					log.Printf(
@@ -443,6 +476,14 @@ func (server *Server) ProcessInsertRows(dataTableAction *DataTableAction, r *htt
 							"-userEmail", userEmail.(string),
 							"-shardId", strconv.Itoa(shardId),
 							"-nbrShards", strconv.Itoa(nbrShards),
+						}
+						if serverCompletedMetric != "" {
+							serverArgs = append(serverArgs, "-serverCompletedMetric")
+							serverArgs = append(serverArgs, serverCompletedMetric)
+						}
+						if serverFailedMetric != "" {
+							serverArgs = append(serverArgs, "-serverFailedMetric")
+							serverArgs = append(serverArgs, serverFailedMetric)
 						}
 						if *usingSshTunnel {
 							serverArgs = append(serverArgs, "-usingSshTunnel")
@@ -484,13 +525,22 @@ func (server *Server) ProcessInsertRows(dataTableAction *DataTableAction, r *htt
 					// Rules Server arguments
 					serverCommands := make([][]string, 0)
 					for shardId:=0; shardId<nbrShards; shardId++ {
-						serverCommands = append(serverCommands, []string{ 
+						serverArgs := []string{ 
 							"-peKey", peKey, 
 							"-userEmail", userEmail.(string),
 							"-shardId", strconv.Itoa(shardId),
 							"-nbrShards", strconv.Itoa(nbrShards),
 							"-doNotLockSessionId",
-						})
+						}
+						if serverCompletedMetric != "" {
+							serverArgs = append(serverArgs, "-serverCompletedMetric")
+							serverArgs = append(serverArgs, serverCompletedMetric)
+						}
+						if serverFailedMetric != "" {
+							serverArgs = append(serverArgs, "-serverFailedMetric")
+							serverArgs = append(serverArgs, serverFailedMetric)
+						}
+						serverCommands = append(serverCommands, serverArgs)
 					}
 					smInput :=	map[string]interface{}{
 						"serverCommands": serverCommands,
@@ -519,6 +569,14 @@ func (server *Server) ProcessInsertRows(dataTableAction *DataTableAction, r *htt
 							"-userEmail", userEmail.(string), 
 							"-nbrShards", strconv.Itoa(nbrShards),
 							"-doNotLockSessionId",
+						}
+						if loaderCompletedMetric != "" {
+							loaderCommand = append(loaderCommand, "-loaderCompletedMetric")
+							loaderCommand = append(loaderCommand, loaderCompletedMetric)
+						}
+						if loaderFailedMetric != "" {
+							loaderCommand = append(loaderCommand, "-loaderFailedMetric")
+							loaderCommand = append(loaderCommand, loaderFailedMetric)
 						}
 						smInput["loaderCommand"] = loaderCommand
 					}

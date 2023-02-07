@@ -78,7 +78,7 @@ func (optionConfig OptionConfig) options(w http.ResponseWriter, r *http.Request)
 
 	// write cors headers
 	//* TODO check that origin is what we expect
-	//*
+	//
 	// for key, value := range r.Header {
 	// 	log.Println("OptionConfig: ",key,value)
 	// }
@@ -94,6 +94,16 @@ func (optionConfig OptionConfig) options(w http.ResponseWriter, r *http.Request)
 	// for key, value := range w.Header() {
 	// 	log.Println("Output Header: ", key, value)
 	// }
+}
+
+func (server *Server) addVersionToDb(jetstoreVersion string) (err error) {
+	// Add version to db
+	stmt := "INSERT INTO jetsapi.jetstore_release (version) VALUES ($1)"
+	_, err = server.dbpool.Exec(context.Background(), stmt, jetstoreVersion)
+	if err != nil {
+		return fmt.Errorf("while inserting jetstore version into jetstore_release table: %v", err)
+	}
+	return nil
 }
 
 // Validate the user table exists and create admin if not already created
@@ -123,7 +133,12 @@ func (server *Server) checkJetStoreDbVersion() error {
 
 		case jetstoreVersion > version:
 			log.Println("New JetStore Release deployed, updating the db")
-			serverArgs = []string{ "-migrateDb" }
+			if os.Getenv("JETS_RESET_DOMAIN_TABLE_ON_STARTUP") == "yes" {
+				server.resetDomainTablesAction()
+				server.addVersionToDb(jetstoreVersion)
+			} else {
+				serverArgs = []string{ "-migrateDb" }
+			}
 
 		default:
 			log.Println("JetStore version in database", version, ">=", "deployed version", jetstoreVersion)
@@ -159,12 +174,7 @@ func (server *Server) checkJetStoreDbVersion() error {
 		log.Println("UPDATE_DB CAPTURED OUTPUT END")
 		log.Println("============================")
 
-		// Add version to db
-		stmt := "INSERT INTO jetsapi.jetstore_release (version) VALUES ($1)"
-		_, err = server.dbpool.Exec(context.Background(), stmt, jetstoreVersion)
-		if err != nil {
-			return fmt.Errorf("while inserting jetstore version into jetstore_release table: %v", err)
-		}
+		server.addVersionToDb(jetstoreVersion)
 	}
 	return nil
 }

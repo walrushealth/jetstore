@@ -107,9 +107,12 @@ String? homeFormValidator(
       if (v != null) return null;
       return "Main input source row must be selected";
 
-    case DTKeys.fileKeyStagingForPipelineExecTable:
+    case DTKeys.fileKeyStagingForPipelineMainProcessInput:
       if (v != null) return null;
       return "File Key row must be selected";
+
+    // case DTKeys.fileKeyStagingForPipelineMergeProcessInput:
+    //   return null;
 
     case FSK.mergedInputRegistryKeys:
     case FSK.mergedProcessInputKeys:
@@ -137,6 +140,9 @@ Future<void> homeFormActions(BuildContext context, GlobalKey<FormState> formKey,
       var state = formState.getState(0);
       if (state[FSK.mergedInputRegistryKeys] == null) {
         state[FSK.mergedInputRegistryKeys] = '{}';
+      } else {
+        state[FSK.mergedInputRegistryKeys] =
+          '{${(state[FSK.mergedInputRegistryKeys] as List<String>).join(',')}}';
       }
       state[FSK.pipelineConfigKey] = state[FSK.pipelineConfigKey][0];
       var w = state[FSK.mainInputRegistryKey];

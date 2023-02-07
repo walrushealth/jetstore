@@ -51,11 +51,6 @@ func (ri *ReteInputContext) assertInputEntityRecord(reteSession *bridge.ReteSess
 	ncol := len(inBundleRow.inputRows)
 	for icol := 0; icol < ncol; icol++ {
 		inputColumnSpec := &inBundleRow.processInput.processInputMapping[icol]
-		if inputColumnSpec.isDomainKey {
-			// Column added to ProcessMap to read grouping column,
-			// Not inserted in rdf graph
-			return nil
-		}
 		var object *bridge.Resource
 		var objectArr []*bridge.Resource
 		var err error
@@ -167,8 +162,6 @@ func (ri *ReteInputContext) assertInputEntityRecord(reteSession *bridge.ReteSess
 			return fmt.Errorf("ERROR predicate is null")
 		}
 		if object == nil {
-			nm, err := inputColumnSpec.predicate.GetName()
-			log.Println("** Object is nil nothing to assert for predicate",nm,err)
 			continue
 		}
 		// This is when we insert!....

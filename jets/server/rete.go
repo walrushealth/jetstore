@@ -235,14 +235,16 @@ func (rw *ReteWorkspace) ExecuteRules(
 						entityRow[i] = *outSessionId
 			
 					case strings.HasSuffix(domainColumn.ColumnName, ":domain_key"):
-						domainKey, _, err := tableSpec.DomainKeysInfo.ComputeGroupingKeyI(*nbrShards, &rw.pipelineConfig.mainProcessInput.objectType, &entityRow)
+						objectType := strings.Split(domainColumn.ColumnName, ":")[0]
+						domainKey, _, err := tableSpec.DomainKeysInfo.ComputeGroupingKeyI(*nbrShards, &objectType, &entityRow)
 						if err != nil {
 							return &result, fmt.Errorf("while ComputeGroupingKeyI: %v", err)
 						}			
 						entityRow[i] = domainKey
 			
 					case strings.HasSuffix(domainColumn.ColumnName, ":shard_id"):
-						_, shardId, err := tableSpec.DomainKeysInfo.ComputeGroupingKeyI(*nbrShards, &rw.pipelineConfig.mainProcessInput.objectType, &entityRow)
+						objectType := strings.Split(domainColumn.ColumnName, ":")[0]
+						_, shardId, err := tableSpec.DomainKeysInfo.ComputeGroupingKeyI(*nbrShards, &objectType, &entityRow)
 						if err != nil {
 							return &result, fmt.Errorf("while ComputeGroupingKeyI: %v", err)
 						}			
@@ -352,13 +354,11 @@ func (rw *ReteWorkspace) addOutputPredicate(domainColumns []workspace.DomainColu
 // addInputPredicate: add meta graph resource corresponding to input column names
 func (rw *ReteWorkspace) addInputPredicate(inputColumns []ProcessMap) error {
 	for ipos := range inputColumns {
-		if !inputColumns[ipos].isDomainKey {
-			var err error
-			inputColumns[ipos].predicate, err = rw.js.NewResource(inputColumns[ipos].dataProperty)
-			if err != nil {
-				return fmt.Errorf("while adding predicate to ProcessMap: %v", err)
-			}	
-		}
+		var err error
+		inputColumns[ipos].predicate, err = rw.js.NewResource(inputColumns[ipos].dataProperty)
+		if err != nil {
+			return fmt.Errorf("while adding predicate to ProcessMap: %v", err)
+		}	
 	}
 	return nil
 }

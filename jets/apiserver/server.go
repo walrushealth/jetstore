@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
 	"github.com/artisoft-io/jetstore/jets/schema"
+	"github.com/artisoft-io/jetstore/jets/user"
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
@@ -34,7 +36,7 @@ func jsonh(next http.HandlerFunc) http.HandlerFunc {
 // Middleware Function for validating jwt token
 func authh(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		user_id, err := TokenValid(r)
+		user_id, err := user.TokenValid(r)
 		if err != nil {
 			// //*
 			// log.Println("*** authh for",r.URL.Path,", Unauthorized")
@@ -44,7 +46,7 @@ func authh(next http.HandlerFunc) http.HandlerFunc {
 		// //*
 		// log.Println("* authh for",r.URL.Path,", Authorized for user ID", user_id)
 		// Get a refresh token
-		token, err := CreateToken(user_id)
+		token, err := user.CreateToken(user_id)
 		if err != nil {
 			ERROR(w, http.StatusInternalServerError, errors.New("TokenGenError"))
 			return
@@ -119,6 +121,11 @@ func (server *Server) checkJetStoreDbVersion() error {
 	if !tableExists {
 		// run update db with workspace init script
 		log.Println("JetStore version table does not exist, initializing the db")
+		// Cleanup any remaining
+		server.ResetDomainTables(&PurgeDataAction{
+			Action: "reset_domain_tables",
+			Data: []map[string]interface{}{},
+		})
 		serverArgs = []string{ "-initWorkspaceDb", "-migrateDb" }
 	} else {
 
@@ -132,11 +139,15 @@ func (server *Server) checkJetStoreDbVersion() error {
 		serverArgs = []string{ "-initWorkspaceDb", "-migrateDb" }
 
 		case jetstoreVersion > version:
-			log.Println("New JetStore Release deployed, updating the db")
-			if os.Getenv("JETS_RESET_DOMAIN_TABLE_ON_STARTUP") == "yes" {
-				server.resetDomainTablesAction()
+			if strings.Contains(os.Getenv("JETS_RESET_DOMAIN_TABLE_ON_STARTUP"), "yes") {
+				log.Println("New JetStore Release deployed, rebuilding all tables and running workspace db init script")
+				server.ResetDomainTables(&PurgeDataAction{
+					Action: "reset_domain_tables",
+					Data: []map[string]interface{}{},
+				})
 				server.addVersionToDb(jetstoreVersion)
 			} else {
+				log.Println("New JetStore Release deployed, migrating tables to latest schema")
 				serverArgs = []string{ "-migrateDb" }
 			}
 
@@ -206,7 +217,7 @@ func (server *Server) initUsers() error {
 			}
 		}
 		// hash the password
-		hashedPassword, err := Hash(adminPassword)
+		hashedPassword, err := user.Hash(adminPassword)
 		if err != nil {
 			return fmt.Errorf("while hashing admin password: %v", err)
 		}
@@ -217,6 +228,12 @@ func (server *Server) initUsers() error {
 			return fmt.Errorf("while inserting admin into users table: %v", err)
 		}
 	}
+	// Initialize user package
+	// Set the AdminEmail for the user package
+	user.AdminEmail = *adminEmail
+	user.ApiSecret = *apiSecret
+	user.TokenExpiration = *tokenExpiration
+
 	return nil
 }
 

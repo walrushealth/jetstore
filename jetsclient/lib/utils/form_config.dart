@@ -16,7 +16,7 @@ enum TextRestriction { none, allLower, allUpper, digitsOnly }
 
 /// Form action delegate for [JetsForm] also used for dialogs presented from a
 /// data table button
-typedef FormActionsDelegate = Future<void> Function(BuildContext context,
+typedef FormActionsDelegate = Future<String?> Function(BuildContext context,
     GlobalKey<FormState> formKey, JetsFormState formState, String actionKey,
     {required int group});
 
@@ -555,24 +555,24 @@ final Map<String, FormConfig> _formConfigurations = {
     ],
   ),
 
-  // Source Config
-  FormKeys.sourceConfig: FormConfig(
-    key: FormKeys.sourceConfig,
+  // Client & Org Admin
+  FormKeys.clientAdmin: FormConfig(
+    key: FormKeys.clientAdmin,
     actions: [
       // Action-less form
     ],
     inputFields: [
       [
         FormDataTableFieldConfig(
-            key: DTKeys.sourceConfigTable,
+            key: DTKeys.clientAdminTable,
             tableHeight: 400,
-            dataTableConfig: DTKeys.sourceConfigTable)
+            dataTableConfig: DTKeys.clientAdminTable)
       ],
       [
         FormDataTableFieldConfig(
-            key: DTKeys.fileKeyStagingTable,
+            key: DTKeys.orgNameTable,
             tableHeight: 400,
-            dataTableConfig: DTKeys.fileKeyStagingTable),
+            dataTableConfig: DTKeys.orgNameTable),
       ],
     ],
   ),
@@ -620,6 +620,73 @@ final Map<String, FormConfig> _formConfigurations = {
       ],
     ],
   ),
+
+  // Add Organization Dialog
+  FormKeys.addOrg: FormConfig(
+    key: FormKeys.addOrg,
+    title: "Add Organization",
+    actions: [
+      FormActionConfig(
+          key: ActionKeys.orgOk,
+          label: "Insert",
+          buttonStyle: ActionStyle.primary,
+          leftMargin: defaultPadding,
+          rightMargin: betweenTheButtonsPadding),
+      FormActionConfig(
+          key: ActionKeys.dialogCancel,
+          label: "Cancel",
+          buttonStyle: ActionStyle.secondary,
+          leftMargin: betweenTheButtonsPadding,
+          rightMargin: defaultPadding),
+    ],
+    inputFields: [
+      [
+        FormInputFieldConfig(
+            key: FSK.org,
+            label: "Organization Name",
+            hint: "Organization name as a short name",
+            flex: 1,
+            autofocus: true,
+            obscureText: false,
+            textRestriction: TextRestriction.none,
+            maxLength: 20),
+      ],
+      [
+        FormInputFieldConfig(
+            key: FSK.details,
+            label: "Details",
+            hint: "Optional notes",
+            flex: 1,
+            autofocus: false,
+            obscureText: false,
+            textRestriction: TextRestriction.none,
+            maxLength: 80),
+      ],
+    ],
+  ),
+
+  // Source Config
+  FormKeys.sourceConfig: FormConfig(
+    key: FormKeys.sourceConfig,
+    actions: [
+      // Action-less form
+    ],
+    inputFields: [
+      [
+        FormDataTableFieldConfig(
+            key: DTKeys.sourceConfigTable,
+            tableHeight: 400,
+            dataTableConfig: DTKeys.sourceConfigTable)
+      ],
+      [
+        FormDataTableFieldConfig(
+            key: DTKeys.fileKeyStagingTable,
+            tableHeight: 400,
+            dataTableConfig: DTKeys.fileKeyStagingTable),
+      ],
+    ],
+  ),
+
   // addSourceConfig - Dialog to add/update Source Config
   FormKeys.addSourceConfig: FormConfig(
     key: FormKeys.addSourceConfig,
@@ -645,18 +712,36 @@ final Map<String, FormConfig> _formConfigurations = {
             items: [
               DropdownItemConfig(label: 'Select a Client'),
             ],
-            autovalidateMode: AutovalidateMode.always,
             dropdownItemsQuery:
-                "SELECT client FROM jetsapi.client_registry ORDER BY client ASC LIMIT 50"),
+                "SELECT client FROM jetsapi.client_registry ORDER BY client ASC LIMIT 200"),
+        FormDropdownFieldConfig(
+            key: FSK.org,
+            items: [
+              DropdownItemConfig(label: 'Select an Organization'),
+              DropdownItemConfig(label: 'No Organization', value: ''),
+            ],
+            dropdownItemsQuery:
+                "SELECT org FROM jetsapi.client_org_registry WHERE client = '{client}' ORDER BY org ASC LIMIT 100",
+            stateKeyPredicates: [FSK.client]),
+      ],
+      [
         FormDropdownFieldConfig(
             key: FSK.objectType,
             returnedModelCacheKey: FSK.objectTypeRegistryCache,
             items: [
               DropdownItemConfig(label: 'Select an Object Type'),
             ],
-            autovalidateMode: AutovalidateMode.always,
             dropdownItemsQuery:
                 "SELECT object_type, entity_rdf_type FROM jetsapi.object_type_registry ORDER BY object_type ASC LIMIT 50"),
+        FormDropdownFieldConfig(
+            key: FSK.automated,
+            items: [
+              DropdownItemConfig(label: 'Select Automation Status...'),
+              DropdownItemConfig(label: 'Automated', value: '1'),
+              DropdownItemConfig(label: 'Manual', value: '0'),
+            ],
+            flex: 1,
+            defaultItemPos: 0),
       ],
       [
         PaddingConfig(),
@@ -730,20 +815,27 @@ final Map<String, FormConfig> _formConfigurations = {
             items: [
               DropdownItemConfig(label: 'Select a Client'),
             ],
-            autovalidateMode: AutovalidateMode.always,
             dropdownItemsQuery:
                 "SELECT client FROM jetsapi.client_registry ORDER BY client ASC LIMIT 50"),
+        FormDropdownFieldConfig(
+            key: FSK.org,
+            items: [
+              DropdownItemConfig(label: 'Select an Organization'),
+              DropdownItemConfig(label: 'No Organization', value: ''),
+            ],
+            dropdownItemsQuery:
+                "SELECT org FROM jetsapi.client_org_registry WHERE client = '{client}' ORDER BY org ASC LIMIT 100",
+            stateKeyPredicates: [FSK.client]),
+      ],
+      [
         FormDropdownFieldConfig(
             key: FSK.objectType,
             returnedModelCacheKey: FSK.objectTypeRegistryCache,
             items: [
               DropdownItemConfig(label: 'Select an Object Type'),
             ],
-            autovalidateMode: AutovalidateMode.always,
             dropdownItemsQuery:
                 "SELECT object_type, entity_rdf_type FROM jetsapi.object_type_registry ORDER BY object_type ASC LIMIT 50"),
-      ],
-      [
         FormDropdownFieldConfig(
             key: FSK.sourceType,
             items: [
@@ -751,8 +843,16 @@ final Map<String, FormConfig> _formConfigurations = {
               DropdownItemConfig(label: 'File', value: 'file'),
               DropdownItemConfig(label: 'Domain Table', value: 'domain_table'),
             ],
-            autovalidateMode: AutovalidateMode.always,
             defaultItemPos: 0),
+        FormInputFieldConfig(
+            key: FSK.lookbackPeriods,
+            label: "Lookback Periods",
+            hint: "Number of periods to include in the rule session",
+            flex: 1,
+            autofocus: false,
+            obscureText: false,
+            textRestriction: TextRestriction.digitsOnly,
+            maxLength: 10),
       ],
     ],
   ),
@@ -1100,7 +1200,7 @@ final Map<String, FormConfig> _formConfigurations = {
         FormDropdownFieldConfig(
             key: FSK.automated,
             items: [
-              DropdownItemConfig(label: 'Select...'),
+              DropdownItemConfig(label: 'Select automation mode'),
               DropdownItemConfig(label: 'Automated', value: '1'),
               DropdownItemConfig(label: 'Manual', value: '0'),
             ],
@@ -1160,7 +1260,8 @@ final Map<String, FormConfig> _formConfigurations = {
         // Instruction
         TextFieldConfig(
             label: "To start a pipeline using input data from a source that was"
-                " previously loaded, first select a Pipeline Configuration and"
+                " previously loaded, first select a Pipeline Configuration followed"
+                " by the source period the file was received ,and"
                 " then select the Main Input Source (required) and optionally"
                 " the Merge-In Input Sources.",
             maxLines: 5,
@@ -1171,6 +1272,14 @@ final Map<String, FormConfig> _formConfigurations = {
         // Pipeline Configuration Table (note using FSK key)
         FormDataTableFieldConfig(
             key: FSK.pipelineConfigKey, dataTableConfig: FSK.pipelineConfigKey),
+      ],
+      [
+        PaddingConfig(),
+      ],
+      [
+        // Source period identifying when the file was received
+        FormDataTableFieldConfig(
+            key: FSK.sourcePeriodKey, dataTableConfig: FSK.sourcePeriodKey),
       ],
       [
         PaddingConfig(),
@@ -1191,6 +1300,7 @@ final Map<String, FormConfig> _formConfigurations = {
     ],
   ),
 
+  //* TODO Remove this
   // Load & Start Pipeline - Dialog
   FormKeys.loadAndStartPipeline: FormConfig(
     key: FormKeys.loadAndStartPipeline,
@@ -1216,8 +1326,8 @@ final Map<String, FormConfig> _formConfigurations = {
         // Instruction
         TextFieldConfig(
             label: "To load a file and start a pipeline using it,"
-                " first select a Pipeline Configuration and"
-                " then select a File Key and it's grouping column to load and then use as the"
+                " first select a Pipeline Configuration and Source Period of the file, and"
+                " then select a File Key to load and then use as the"
                 " Main Input Source and optionally select"
                 " the Merge-In Input Sources (previously loaded or computed).",
             maxLines: 5,
@@ -1228,6 +1338,14 @@ final Map<String, FormConfig> _formConfigurations = {
         // Pipeline Configuration Table (note using FSK key)
         FormDataTableFieldConfig(
             key: FSK.pipelineConfigKey, dataTableConfig: FSK.pipelineConfigKey),
+      ],
+      [
+        PaddingConfig(),
+      ],
+      [
+        // Source period identifying when the file was received
+        FormDataTableFieldConfig(
+            key: FSK.sourcePeriodKey, dataTableConfig: FSK.sourcePeriodKey),
       ],
       [
         PaddingConfig(),

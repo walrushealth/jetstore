@@ -8,8 +8,6 @@ import 'package:jetsclient/utils/constants.dart';
 class TableConfig {
   TableConfig(
       {required this.key,
-      required this.schemaName,
-      required this.tableName,
       this.label = "",
       required this.apiPath,
       required this.isCheckboxVisible,
@@ -17,6 +15,7 @@ class TableConfig {
       required this.actions,
       required this.columns,
       this.defaultToAllRows = false,
+      required this.fromClauses,
       required this.whereClauses,
       this.refreshOnKeyUpdateEvent = const [],
       this.formStateConfig,
@@ -24,8 +23,6 @@ class TableConfig {
       required this.sortAscending,
       required this.rowsPerPage});
   final String key;
-  final String schemaName;
-  final String tableName;
   final String label;
   final String apiPath;
   final bool isCheckboxVisible;
@@ -33,6 +30,7 @@ class TableConfig {
   final List<ActionConfig> actions;
   final List<ColumnConfig> columns;
   final bool defaultToAllRows;
+  final List<FromClause> fromClauses;
   final List<WhereClause> whereClauses;
   final List<String> refreshOnKeyUpdateEvent;
   final DataTableFormStateConfig? formStateConfig;
@@ -135,6 +133,7 @@ class ActionConfig {
 class ColumnConfig {
   ColumnConfig({
     required this.index,
+    this.table,
     required this.name,
     required this.label,
     required this.tooltips,
@@ -144,6 +143,7 @@ class ColumnConfig {
     this.columnWidth = 0,
   });
   final int index;
+  final String? table;
   final String name;
   final String label;
   final String tooltips;
@@ -153,15 +153,26 @@ class ColumnConfig {
   final double columnWidth;
 }
 
+class FromClause {
+  FromClause({
+    required this.schemaName,
+    required this.tableName,
+  });
+  final String schemaName;
+  final String tableName;
+}
+
 class WhereClause {
   WhereClause({
     required this.column,
     this.formStateKey,
     this.defaultValue = const [],
+    this.joinWith,
   });
   final String column;
   final String? formStateKey;
   final List<String> defaultValue;
+  final String? joinWith;
 }
 
 class DataTableFormStateConfig {
@@ -180,164 +191,246 @@ class DataTableFormStateOtherColumnConfig {
   final int columnIdx;
 }
 
+// To avoid duplication
+final inputRegistryColumns = [
+  ColumnConfig(
+      index: 0,
+      table: "input_registry",
+      name: "key",
+      label: 'Key',
+      tooltips: 'Input Registry Key',
+      isNumeric: true,
+      isHidden: false),
+  ColumnConfig(
+      index: 1,
+      name: "client",
+      label: 'Client',
+      tooltips: 'Client the file came from',
+      isNumeric: false),
+  ColumnConfig(
+      index: 2,
+      name: "org",
+      label: 'Organization',
+      tooltips: 'Client' 's org the file came from',
+      isNumeric: false),
+  ColumnConfig(
+      index: 3,
+      name: "object_type",
+      label: 'Object Type',
+      tooltips: 'Type of objects in file',
+      isNumeric: false),
+  ColumnConfig(
+      index: 4,
+      name: "year",
+      label: 'Year',
+      tooltips: 'Year the file was received',
+      isNumeric: true),
+  ColumnConfig(
+      index: 5,
+      name: "month",
+      label: 'Month',
+      tooltips: 'Month of the year the file was received',
+      isNumeric: true),
+  ColumnConfig(
+      index: 6,
+      name: "day",
+      label: 'Day',
+      tooltips: 'Day of the month the file was received',
+      isNumeric: true),
+  ColumnConfig(
+      index: 7,
+      name: "file_key",
+      label: 'File Key',
+      tooltips: 'File Key of the loaded file',
+      isNumeric: false),
+  ColumnConfig(
+      index: 8,
+      name: "source_type",
+      label: 'Source Type',
+      tooltips: 'Source of the input data, either File or Domain Table',
+      isNumeric: false),
+  ColumnConfig(
+      index: 9,
+      name: "table_name",
+      label: 'Table Name',
+      tooltips: 'Table where the data reside',
+      isNumeric: false),
+  ColumnConfig(
+      index: 10,
+      name: "session_id",
+      label: 'Session ID',
+      tooltips: 'Session ID of the file load job',
+      isNumeric: false),
+  ColumnConfig(
+      index: 11,
+      name: "user_email",
+      label: 'User',
+      tooltips: 'Who created the record',
+      isNumeric: false),
+  ColumnConfig(
+      index: 12,
+      name: "last_update",
+      label: 'Loaded At',
+      tooltips: 'Indicates when the record was created',
+      isNumeric: false),
+];
+
+final processInputColumns = [
+  ColumnConfig(
+      index: 0,
+      name: "key",
+      label: 'Key',
+      tooltips: 'Row Primary Key',
+      isNumeric: true,
+      isHidden: true),
+  ColumnConfig(
+      index: 1,
+      name: "client",
+      label: 'Client',
+      tooltips: 'Client the file came from',
+      isNumeric: false),
+  ColumnConfig(
+      index: 2,
+      name: "org",
+      label: 'Organization',
+      tooltips: 'Client' 's organization the file came from',
+      isNumeric: false),
+  ColumnConfig(
+      index: 3,
+      name: "object_type",
+      label: 'Object Type',
+      tooltips: 'Type of objects in file',
+      isNumeric: false),
+  ColumnConfig(
+      index: 4,
+      name: "table_name",
+      label: 'Table Name',
+      tooltips: 'Table where the file was loaded',
+      isNumeric: false,
+      isHidden: false),
+  ColumnConfig(
+      index: 5,
+      name: "source_type",
+      label: 'Source Type',
+      tooltips: 'Source of the input data, either File or Domain Table',
+      isNumeric: false),
+  ColumnConfig(
+      index: 6,
+      name: "lookback_periods",
+      label: 'Lookback Periods',
+      tooltips: 'Number of periods included in the rule session',
+      isNumeric: true),
+  ColumnConfig(
+      index: 7,
+      name: "entity_rdf_type",
+      label: 'Domain Class',
+      tooltips: 'Canonical model for the Object Type',
+      isNumeric: false),
+  ColumnConfig(
+      index: 8,
+      name: "status",
+      label: 'Status',
+      tooltips: "Status of the Process Input and it's mapping",
+      isNumeric: false),
+  ColumnConfig(
+      index: 9,
+      name: "user_email",
+      label: 'User',
+      tooltips: 'Who created the record',
+      isNumeric: false),
+  ColumnConfig(
+      index: 10,
+      name: "last_update",
+      label: 'Loaded At',
+      tooltips: 'Indicates when the record was created',
+      isNumeric: false),
+];
+
+final fileKeyStagingColumns = [
+  ColumnConfig(
+      index: 0,
+      table: "file_key_staging",
+      name: "key",
+      label: 'Primary Key',
+      tooltips: '',
+      isNumeric: true,
+      isHidden: true),
+  ColumnConfig(
+      index: 1,
+      name: "client",
+      label: 'Client',
+      tooltips: 'Client providing the input files',
+      isNumeric: false),
+  ColumnConfig(
+      index: 2,
+      name: "org",
+      label: 'Organization',
+      tooltips: 'Client' 's organization',
+      isNumeric: false),
+  ColumnConfig(
+      index: 3,
+      name: "object_type",
+      label: 'Object Type',
+      tooltips: 'The type of object the file contains',
+      isNumeric: false),
+  ColumnConfig(
+      index: 4,
+      name: "file_key",
+      label: 'File Key',
+      tooltips: 'File key or path',
+      isNumeric: false),
+  ColumnConfig(
+      index: 5,
+      name: "year",
+      label: 'Year',
+      tooltips: 'Year the file was received',
+      isNumeric: true),
+  ColumnConfig(
+      index: 6,
+      name: "month",
+      label: 'Month',
+      tooltips: 'Month of the year the file was received',
+      isNumeric: true),
+  ColumnConfig(
+      index: 7,
+      name: "day",
+      label: 'Day',
+      tooltips: 'Day of the month the file was received',
+      isNumeric: true),
+  ColumnConfig(
+      index: 8,
+      name: "last_update",
+      label: 'Last Update',
+      tooltips: 'When the file was received',
+      isNumeric: false),
+  ColumnConfig(
+      index: 9,
+      name: "source_period_key",
+      label: 'Source Period Key',
+      tooltips: '',
+      isHidden: true,
+      isNumeric: true),
+];
+
 final Map<String, TableConfig> _tableConfigurations = {
   // Input Loader Status Data Table
   DTKeys.inputLoaderStatusTable: TableConfig(
     key: DTKeys.inputLoaderStatusTable,
-    schemaName: 'jetsapi',
-    tableName: 'input_loader_status',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'input_loader_status'),
+      FromClause(schemaName: 'jetsapi', tableName: 'source_period')
+    ],
     label: 'File Loader Status',
     apiPath: '/dataTable',
     isCheckboxVisible: false,
     isCheckboxSingleSelect: false,
-    whereClauses: [],
+    whereClauses: [
+      WhereClause(column: "source_period_key", joinWith: "source_period.key"),
+    ],
     // use FSK.key to trigger table refresh when load & Start Pipeline action
     // add a row to input_loader_status table
     refreshOnKeyUpdateEvent: [FSK.key],
     actions: [
-      ActionConfig(
-          actionType: DataTableActionType.refreshTable,
-          key: 'refreshTable',
-          label: 'Refresh',
-          style: ActionStyle.secondary,
-          isVisibleWhenCheckboxVisible: null,
-          isEnabledWhenHavingSelectedRows: null),
-    ],
-    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
-      DataTableFormStateOtherColumnConfig(
-        // an example, not really needed...
-        stateKey: FSK.tableName,
-        columnIdx: 3,
-      ),
-    ]),
-    columns: [
-      ColumnConfig(
-          index: 0,
-          name: "key",
-          label: 'Key',
-          tooltips: 'Row Primary Key',
-          isNumeric: true,
-          isHidden: true),
-      ColumnConfig(
-          index: 1,
-          name: "client",
-          label: 'Client',
-          tooltips: 'Client the file came from',
-          isNumeric: false),
-      ColumnConfig(
-          index: 2,
-          name: "object_type",
-          label: 'Object Type',
-          tooltips: 'Type of object in file',
-          isNumeric: false),
-      ColumnConfig(
-          index: 3,
-          name: "table_name",
-          label: 'Table Name',
-          tooltips: 'Table where the file was loaded',
-          isNumeric: false,
-          isHidden: true),
-      ColumnConfig(
-          index: 4,
-          name: "file_key",
-          label: 'File Key',
-          tooltips: 'File key',
-          isNumeric: false),
-      ColumnConfig(
-          index: 5,
-          name: "load_count",
-          label: 'Records Count',
-          tooltips: 'Number of records loaded',
-          isNumeric: true),
-      ColumnConfig(
-          index: 6,
-          name: "bad_row_count",
-          label: 'Bad Records',
-          tooltips: 'Number of Bad Records',
-          isNumeric: true),
-      ColumnConfig(
-          index: 7,
-          name: "status",
-          label: 'Status',
-          tooltips: 'Status of the load',
-          isNumeric: false),
-      ColumnConfig(
-          index: 8,
-          name: "error_message",
-          label: 'Error Message',
-          tooltips: 'Error that occured during execution',
-          isNumeric: false,
-          maxLines: 3,
-          columnWidth: 600),
-      ColumnConfig(
-          index: 9,
-          name: "session_id",
-          label: 'Session ID',
-          tooltips: 'Data Pipeline Job Key',
-          isNumeric: false),
-      ColumnConfig(
-          index: 10,
-          name: "user_email",
-          label: 'User',
-          tooltips: 'Who loaded the file',
-          isNumeric: false),
-      ColumnConfig(
-          index: 11,
-          name: "last_update",
-          label: 'Loaded At',
-          tooltips: 'Indicates when the file was loaded',
-          isNumeric: false),
-    ],
-    sortColumnName: 'last_update',
-    sortAscending: false,
-    rowsPerPage: 10,
-  ),
-
-  // Pipeline Execution Status Data Table
-  DTKeys.pipelineExecStatusTable: TableConfig(
-    key: DTKeys.pipelineExecStatusTable,
-    schemaName: 'jetsapi',
-    tableName: 'pipeline_execution_status',
-    label: 'Pipeline Execution Status',
-    apiPath: '/dataTable',
-    isCheckboxVisible: true,
-    isCheckboxSingleSelect: true,
-    whereClauses: [],
-    actions: [
-      ActionConfig(
-          actionType: DataTableActionType.showDialog,
-          key: 'startPipeline',
-          label: 'Start Pipeline',
-          style: ActionStyle.primary,
-          isVisibleWhenCheckboxVisible: null,
-          isEnabledWhenHavingSelectedRows: null,
-          configForm: FormKeys.startPipeline),
-      ActionConfig(
-          actionType: DataTableActionType.showDialog,
-          key: 'startE2E',
-          label: 'Load & Start Pipeline',
-          style: ActionStyle.secondary,
-          isVisibleWhenCheckboxVisible: null,
-          isEnabledWhenHavingSelectedRows: null,
-          configForm: FormKeys.loadAndStartPipeline),
-      ActionConfig(
-          actionType: DataTableActionType.showScreen,
-          key: 'viewStatusDetails',
-          label: 'View Execution Details',
-          style: ActionStyle.secondary,
-          isVisibleWhenCheckboxVisible: null,
-          isEnabledWhenHavingSelectedRows: true,
-          configScreenPath: executionStatusDetailsPath,
-          navigationParams: {'session_id': 10}),
-      ActionConfig(
-          actionType: DataTableActionType.showScreen,
-          key: 'viewProcessErrors',
-          label: 'View Process Errors',
-          style: ActionStyle.secondary,
-          isVisibleWhenCheckboxVisible: null,
-          isEnabledWhenHavingSelectedRows: true,
-          configScreenPath: processErrorsPath,
-          navigationParams: {'session_id': 10}),
       ActionConfig(
           actionType: DataTableActionType.refreshTable,
           key: 'refreshTable',
@@ -351,6 +444,166 @@ final Map<String, TableConfig> _tableConfigurations = {
     columns: [
       ColumnConfig(
           index: 0,
+          table: "input_loader_status",
+          name: "key",
+          label: 'Key',
+          tooltips: 'Row Primary Key',
+          isNumeric: true,
+          isHidden: true),
+      ColumnConfig(
+          index: 1,
+          name: "client",
+          label: 'Client',
+          tooltips: 'Client the file came from',
+          isNumeric: false),
+      ColumnConfig(
+          index: 2,
+          name: "org",
+          label: 'Organization',
+          tooltips: 'Client' 's organization',
+          isNumeric: false),
+      ColumnConfig(
+          index: 3,
+          name: "object_type",
+          label: 'Object Type',
+          tooltips: 'Type of object in file',
+          isNumeric: false),
+      ColumnConfig(
+          index: 4,
+          name: "year",
+          label: 'Year',
+          tooltips: 'Year the file was received',
+          isNumeric: true),
+      ColumnConfig(
+          index: 5,
+          name: "month",
+          label: 'Month',
+          tooltips: 'Month of the year the file was received',
+          isNumeric: true),
+      ColumnConfig(
+          index: 6,
+          name: "day",
+          label: 'Day',
+          tooltips: 'Day of the month the file was received',
+          isNumeric: true),
+      ColumnConfig(
+          index: 7,
+          name: "table_name",
+          label: 'Table Name',
+          tooltips: 'Table where the file was loaded',
+          isNumeric: false,
+          isHidden: true),
+      ColumnConfig(
+          index: 8,
+          name: "file_key",
+          label: 'File Key',
+          tooltips: 'File key',
+          isNumeric: false),
+      ColumnConfig(
+          index: 9,
+          name: "load_count",
+          label: 'Records Count',
+          tooltips: 'Number of records loaded',
+          isNumeric: true),
+      ColumnConfig(
+          index: 10,
+          name: "bad_row_count",
+          label: 'Bad Records',
+          tooltips: 'Number of Bad Records',
+          isNumeric: true),
+      ColumnConfig(
+          index: 11,
+          name: "status",
+          label: 'Status',
+          tooltips: 'Status of the load',
+          isNumeric: false),
+      ColumnConfig(
+          index: 12,
+          name: "error_message",
+          label: 'Error Message',
+          tooltips: 'Error that occured during execution',
+          isNumeric: false,
+          maxLines: 3,
+          columnWidth: 600),
+      ColumnConfig(
+          index: 13,
+          name: "session_id",
+          label: 'Session ID',
+          tooltips: 'Data Pipeline Job Key',
+          isNumeric: false),
+      ColumnConfig(
+          index: 14,
+          name: "user_email",
+          label: 'User',
+          tooltips: 'Who loaded the file',
+          isNumeric: false),
+      ColumnConfig(
+          index: 15,
+          name: "last_update",
+          label: 'Loaded At',
+          tooltips: 'Indicates when the file was loaded',
+          isNumeric: false),
+    ],
+    sortColumnName: 'last_update',
+    sortAscending: false,
+    rowsPerPage: 10,
+  ),
+
+  // Pipeline Execution Status Data Table
+  DTKeys.pipelineExecStatusTable: TableConfig(
+    key: DTKeys.pipelineExecStatusTable,
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'pipeline_execution_status'),
+      FromClause(schemaName: 'jetsapi', tableName: 'source_period')
+    ],
+    label: 'Pipeline Execution Status',
+    apiPath: '/dataTable',
+    isCheckboxVisible: true,
+    isCheckboxSingleSelect: true,
+    whereClauses: [
+      WhereClause(column: "source_period_key", joinWith: "source_period.key"),
+    ],
+    actions: [
+      ActionConfig(
+          actionType: DataTableActionType.showDialog,
+          key: 'startPipeline',
+          label: 'Start Pipeline',
+          style: ActionStyle.primary,
+          isVisibleWhenCheckboxVisible: null,
+          isEnabledWhenHavingSelectedRows: null,
+          configForm: FormKeys.startPipeline),
+      ActionConfig(
+          actionType: DataTableActionType.showScreen,
+          key: 'viewStatusDetails',
+          label: 'View Execution Details',
+          style: ActionStyle.secondary,
+          isVisibleWhenCheckboxVisible: null,
+          isEnabledWhenHavingSelectedRows: true,
+          configScreenPath: executionStatusDetailsPath,
+          navigationParams: {'session_id': 13}),
+      ActionConfig(
+          actionType: DataTableActionType.showScreen,
+          key: 'viewProcessErrors',
+          label: 'View Process Errors',
+          style: ActionStyle.secondary,
+          isVisibleWhenCheckboxVisible: null,
+          isEnabledWhenHavingSelectedRows: true,
+          configScreenPath: processErrorsPath,
+          navigationParams: {'session_id': 13}),
+      ActionConfig(
+          actionType: DataTableActionType.refreshTable,
+          key: 'refreshTable',
+          label: 'Refresh',
+          style: ActionStyle.secondary,
+          isVisibleWhenCheckboxVisible: null,
+          isEnabledWhenHavingSelectedRows: null),
+    ],
+    formStateConfig:
+        DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: []),
+    columns: [
+      ColumnConfig(
+          index: 0,
+          table: "pipeline_execution_status",
           name: "key",
           label: 'Key',
           tooltips: '',
@@ -384,51 +637,69 @@ final Map<String, TableConfig> _tableConfigurations = {
           isNumeric: false),
       ColumnConfig(
           index: 5,
+          name: "year",
+          label: 'Year',
+          tooltips: 'Year the file was received',
+          isNumeric: true),
+      ColumnConfig(
+          index: 6,
+          name: "month",
+          label: 'Month',
+          tooltips: 'Month of the year the file was received',
+          isNumeric: true),
+      ColumnConfig(
+          index: 7,
+          name: "day",
+          label: 'Day',
+          tooltips: 'Day of the month the file was received',
+          isNumeric: true),
+      ColumnConfig(
+          index: 8,
           name: "main_input_registry_key",
           label: 'Main Input Registry',
           tooltips:
               'Main input from previously loaded file, this specify the input session id',
           isNumeric: true),
       ColumnConfig(
-          index: 6,
+          index: 9,
           name: "main_input_file_key",
           label: 'Main Input File Key',
           tooltips:
               'Start the process by loading the this file and then execute the rule process',
           isNumeric: false),
       ColumnConfig(
-          index: 7,
+          index: 10,
           name: "merged_input_registry_keys",
           label: 'Merge-In Input Registry',
           tooltips:
               'Indicate the session id of the input sources to be merged with the main input source',
           isNumeric: false),
       ColumnConfig(
-          index: 8,
+          index: 11,
           name: "status",
           label: 'Status',
           tooltips: 'Status of the pipeline execution',
           isNumeric: false),
       ColumnConfig(
-          index: 9,
+          index: 12,
           name: "input_session_id",
           label: 'Input Session',
           tooltips: 'Input session used (overriding input registry)',
           isNumeric: false),
       ColumnConfig(
-          index: 10,
+          index: 13,
           name: "session_id",
           label: 'Session ID',
           tooltips: 'Data Pipeline session identifier',
           isNumeric: false),
       ColumnConfig(
-          index: 11,
+          index: 14,
           name: "user_email",
           label: 'User',
           tooltips: 'Who submitted the pipeline',
           isNumeric: false),
       ColumnConfig(
-          index: 12,
+          index: 15,
           name: "last_update",
           label: 'Loaded At',
           tooltips: 'Indicates when the pipeline was submitted',
@@ -442,14 +713,17 @@ final Map<String, TableConfig> _tableConfigurations = {
   // Pipeline Execution Status Details Data Table
   DTKeys.pipelineExecDetailsTable: TableConfig(
     key: DTKeys.pipelineExecDetailsTable,
-    schemaName: 'jetsapi',
-    tableName: 'pipeline_execution_details',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'pipeline_execution_details'),
+      FromClause(schemaName: 'jetsapi', tableName: 'source_period')
+    ],
     label: 'Pipeline Execution Details',
     apiPath: '/dataTable',
     isCheckboxVisible: false,
     isCheckboxSingleSelect: true,
     whereClauses: [
       WhereClause(column: "session_id", formStateKey: FSK.sessionId),
+      WhereClause(column: "source_period_key", joinWith: "source_period.key"),
     ],
     actions: [],
     formStateConfig:
@@ -457,6 +731,7 @@ final Map<String, TableConfig> _tableConfigurations = {
     columns: [
       ColumnConfig(
           index: 0,
+          table: "pipeline_execution_details",
           name: "key",
           label: 'Key',
           tooltips: 'Row Primary Key',
@@ -476,12 +751,30 @@ final Map<String, TableConfig> _tableConfigurations = {
           isNumeric: false),
       ColumnConfig(
           index: 3,
+          name: "year",
+          label: 'Year',
+          tooltips: 'Year the file was received',
+          isNumeric: true),
+      ColumnConfig(
+          index: 4,
+          name: "month",
+          label: 'Month',
+          tooltips: 'Month of the year the file was received',
+          isNumeric: true),
+      ColumnConfig(
+          index: 5,
+          name: "day",
+          label: 'Day',
+          tooltips: 'Day of the month the file was received',
+          isNumeric: true),
+      ColumnConfig(
+          index: 6,
           name: "status",
           label: 'Status',
           tooltips: 'Status of the pipeline shard',
           isNumeric: false),
       ColumnConfig(
-          index: 4,
+          index: 7,
           name: "error_message",
           label: 'Error Message',
           tooltips: 'Error that occured during execution',
@@ -489,49 +782,49 @@ final Map<String, TableConfig> _tableConfigurations = {
           maxLines: 3,
           columnWidth: 600),
       ColumnConfig(
-          index: 5,
+          index: 8,
           name: "shard_id",
           label: 'Shard ID',
           tooltips: 'Pipeline shard ID',
           isNumeric: true),
       ColumnConfig(
-          index: 6,
+          index: 9,
           name: "input_records_count",
           label: 'Input Records Count',
           tooltips: 'Number of input records',
           isNumeric: true),
       ColumnConfig(
-          index: 7,
+          index: 10,
           name: "rete_sessions_count",
           label: 'Rete Sessions Count',
           tooltips: 'Number of rete sessions',
           isNumeric: true),
       ColumnConfig(
-          index: 8,
+          index: 11,
           name: "output_records_count",
           label: 'Output Records Count',
           tooltips: 'Number of output records',
           isNumeric: true),
       ColumnConfig(
-          index: 9,
+          index: 12,
           name: "main_input_session_id",
           label: 'Input Session ID',
           tooltips: 'Session ID of main input table',
           isNumeric: false),
       ColumnConfig(
-          index: 10,
+          index: 13,
           name: "session_id",
           label: 'Session ID',
           tooltips: 'Data Pipeline session ID',
           isNumeric: false),
       ColumnConfig(
-          index: 11,
+          index: 14,
           name: "user_email",
           label: 'User',
           tooltips: 'Who started the pipeline',
           isNumeric: false),
       ColumnConfig(
-          index: 12,
+          index: 15,
           name: "last_update",
           label: 'Loaded At',
           tooltips: 'Indicates when the file was loaded',
@@ -544,9 +837,10 @@ final Map<String, TableConfig> _tableConfigurations = {
 
   // Pipeline Execution Errors (process_erors) Table
   DTKeys.processErrorsTable: TableConfig(
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'process_errors')
+    ],
     key: DTKeys.processErrorsTable,
-    schemaName: 'jetsapi',
-    tableName: 'process_errors',
     label: 'Pipeline Execution Errors',
     apiPath: '/dataTable',
     isCheckboxVisible: false,
@@ -575,13 +869,14 @@ final Map<String, TableConfig> _tableConfigurations = {
           index: 2,
           name: "row_jets_key",
           label: 'Row jets:key',
-          tooltips: 'JetStore row''s primary key',
+          tooltips: 'JetStore row' 's primary key',
           isNumeric: false),
       ColumnConfig(
           index: 3,
           name: "input_column",
           label: 'Input Column',
-          tooltips: 'Input Column of the error, available if error results from mapping',
+          tooltips:
+              'Input Column of the error, available if error results from mapping',
           isNumeric: false),
       ColumnConfig(
           index: 4,
@@ -615,11 +910,167 @@ final Map<String, TableConfig> _tableConfigurations = {
     rowsPerPage: 10,
   ),
 
+  // Client Admin Table used for Client & Organization Admin form
+  DTKeys.clientAdminTable: TableConfig(
+    key: DTKeys.clientAdminTable,
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'client_registry')
+    ],
+    label: 'Client Registry',
+    apiPath: '/dataTable',
+    isCheckboxVisible: true,
+    isCheckboxSingleSelect: true,
+    whereClauses: [],
+    actions: [
+      ActionConfig(
+          actionType: DataTableActionType.showDialog,
+          key: 'addClient',
+          label: 'Add Client',
+          style: ActionStyle.primary,
+          isVisibleWhenCheckboxVisible: null,
+          isEnabledWhenHavingSelectedRows: null,
+          configForm: FormKeys.addClient),
+      ActionConfig(
+          actionType: DataTableActionType.doAction,
+          key: 'deleteClient',
+          label: 'Delete Client',
+          style: ActionStyle.danger,
+          isVisibleWhenCheckboxVisible: true,
+          isEnabledWhenHavingSelectedRows: true,
+          actionName: ActionKeys.deleteClient),
+    ],
+    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
+      DataTableFormStateOtherColumnConfig(
+        stateKey: FSK.client,
+        columnIdx: 0,
+      ),
+    ]),
+    columns: [
+      ColumnConfig(
+          index: 0,
+          name: "client",
+          label: 'Client Name',
+          tooltips: '',
+          isNumeric: false),
+      ColumnConfig(
+          index: 1,
+          name: "details",
+          label: 'Client details',
+          tooltips: '',
+          isNumeric: false),
+    ],
+    sortColumnName: 'client',
+    sortAscending: true,
+    rowsPerPage: 10,
+  ),
+
+  // Org Name Table used for Client & Organization Admin form
+  DTKeys.orgNameTable: TableConfig(
+    key: DTKeys.orgNameTable,
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'client_org_registry')
+    ],
+    label: 'Client Organization Registry',
+    apiPath: '/dataTable',
+    isCheckboxVisible: true,
+    isCheckboxSingleSelect: true,
+    defaultToAllRows: false,
+    whereClauses: [
+      WhereClause(column: "client", formStateKey: FSK.client),
+    ],
+    actions: [
+      ActionConfig(
+          actionType: DataTableActionType.showDialog,
+          key: 'addOrg',
+          label: 'Add Organization',
+          style: ActionStyle.primary,
+          isVisibleWhenCheckboxVisible: true,
+          isEnabledWhenWhereClauseSatisfied: true,
+          configForm: FormKeys.addOrg,
+          stateFormNavigationParams: {FSK.client: FSK.client}),
+      ActionConfig(
+          actionType: DataTableActionType.doAction,
+          key: 'deleteOrg',
+          label: 'Delete Organization',
+          style: ActionStyle.danger,
+          isVisibleWhenCheckboxVisible: true,
+          isEnabledWhenHavingSelectedRows: true,
+          actionName: ActionKeys.deleteOrg),
+    ],
+    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
+      DataTableFormStateOtherColumnConfig(
+        stateKey: FSK.org,
+        columnIdx: 1,
+      ),
+    ]),
+    columns: [
+      ColumnConfig(
+          index: 0,
+          name: "client",
+          label: 'Client Name',
+          tooltips: '',
+          isNumeric: false),
+      ColumnConfig(
+          index: 1,
+          name: "org",
+          label: 'Client Organization',
+          tooltips: '',
+          isNumeric: false),
+      ColumnConfig(
+          index: 2,
+          name: "details",
+          label: 'Organization details',
+          tooltips: '',
+          isNumeric: false),
+    ],
+    sortColumnName: 'org',
+    sortAscending: true,
+    rowsPerPage: 10,
+  ),
+
+  // Client Name Table used for Process & Rules Config form
+  DTKeys.clientsNameTable: TableConfig(
+    key: DTKeys.clientsNameTable,
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'client_registry')
+    ],
+    label: 'Clients',
+    apiPath: '/dataTable',
+    isCheckboxVisible: true,
+    isCheckboxSingleSelect: true,
+    whereClauses: [],
+    actions: [],
+    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
+      DataTableFormStateOtherColumnConfig(
+        stateKey: FSK.client,
+        columnIdx: 0,
+      ),
+    ]),
+    columns: [
+      ColumnConfig(
+          index: 0,
+          name: "client",
+          label: 'Client Name',
+          tooltips: '',
+          isNumeric: false),
+      ColumnConfig(
+          index: 1,
+          name: "details",
+          label: 'Client details',
+          tooltips: '',
+          isNumeric: false),
+    ],
+    sortColumnName: 'client',
+    sortAscending: true,
+    rowsPerPage: 10,
+  ),
+
   // Process Name Table
   DTKeys.processNameTable: TableConfig(
     key: DTKeys.processNameTable,
-    schemaName: 'jetsapi',
-    tableName: 'process_config',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'process_config')
+    ],
     label: 'Rule Processes',
     apiPath: '/dataTable',
     isCheckboxVisible: true,
@@ -658,85 +1109,13 @@ final Map<String, TableConfig> _tableConfigurations = {
     rowsPerPage: 10,
   ),
 
-  // Client Name Table
-  DTKeys.clientsNameTable: TableConfig(
-    key: DTKeys.clientsNameTable,
-    schemaName: 'jetsapi',
-    tableName: 'client_registry',
-    label: 'Clients',
-    apiPath: '/dataTable',
-    isCheckboxVisible: true,
-    isCheckboxSingleSelect: true,
-    whereClauses: [],
-    actions: [],
-    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
-      DataTableFormStateOtherColumnConfig(
-        stateKey: FSK.client,
-        columnIdx: 0,
-      ),
-    ]),
-    columns: [
-      ColumnConfig(
-          index: 0,
-          name: "client",
-          label: 'Client Name',
-          tooltips: '',
-          isNumeric: false),
-      ColumnConfig(
-          index: 1,
-          name: "details",
-          label: 'Client details',
-          tooltips: '',
-          isNumeric: false),
-    ],
-    sortColumnName: 'client',
-    sortAscending: true,
-    rowsPerPage: 10,
-  ),
-
-  // Object Type Registry Data Table
-  DTKeys.objectTypeRegistryTable: TableConfig(
-    key: DTKeys.objectTypeRegistryTable,
-    schemaName: 'jetsapi',
-    tableName: 'object_type_registry',
-    label: 'Object Type Registry',
-    apiPath: '/dataTable',
-    isCheckboxVisible: true,
-    isCheckboxSingleSelect: true,
-    whereClauses: [],
-    actions: [],
-    formStateConfig:
-        DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: []),
-    columns: [
-      ColumnConfig(
-          index: 0,
-          name: "object_type",
-          label: 'Object Type',
-          tooltips: 'The type of object the file contains',
-          isNumeric: false),
-      ColumnConfig(
-          index: 1,
-          name: "entity_rdf_type",
-          label: 'Class Name',
-          tooltips: 'Entity class name',
-          isNumeric: false),
-      ColumnConfig(
-          index: 2,
-          name: "details",
-          label: 'Description',
-          tooltips: 'Details about the class',
-          isNumeric: false),
-    ],
-    sortColumnName: 'object_type',
-    sortAscending: true,
-    rowsPerPage: 10,
-  ),
-
-  // File Key Staging Data Table
+  // File Key Staging Data Table used to load files
   DTKeys.fileKeyStagingTable: TableConfig(
     key: DTKeys.fileKeyStagingTable,
-    schemaName: 'jetsapi',
-    tableName: 'file_key_staging',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'file_key_staging'),
+      FromClause(schemaName: 'jetsapi', tableName: 'source_period'),
+    ],
     label: 'File Key Staging',
     apiPath: '/dataTable',
     isCheckboxVisible: true,
@@ -744,7 +1123,9 @@ final Map<String, TableConfig> _tableConfigurations = {
     defaultToAllRows: true, // when where clause fails
     whereClauses: [
       WhereClause(column: "client", formStateKey: FSK.client),
+      WhereClause(column: "org", formStateKey: FSK.org),
       WhereClause(column: "object_type", formStateKey: FSK.objectType),
+      WhereClause(column: "source_period_key", joinWith: "source_period.key"),
     ],
     actions: [
       ActionConfig(
@@ -764,42 +1145,14 @@ final Map<String, TableConfig> _tableConfigurations = {
     formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
       DataTableFormStateOtherColumnConfig(
         stateKey: FSK.fileKey,
-        columnIdx: 3,
+        columnIdx: 4,
+      ),
+      DataTableFormStateOtherColumnConfig(
+        stateKey: FSK.sourcePeriodKey,
+        columnIdx: 9,
       ),
     ]),
-    columns: [
-      ColumnConfig(
-          index: 0,
-          name: "key",
-          label: 'Primary Key',
-          tooltips: '',
-          isNumeric: true,
-          isHidden: true),
-      ColumnConfig(
-          index: 1,
-          name: "client",
-          label: 'Client',
-          tooltips: 'Client providing the input files',
-          isNumeric: false),
-      ColumnConfig(
-          index: 2,
-          name: "object_type",
-          label: 'Object Type',
-          tooltips: 'The type of object the file contains',
-          isNumeric: false),
-      ColumnConfig(
-          index: 3,
-          name: "file_key",
-          label: 'File Key',
-          tooltips: 'File key or path',
-          isNumeric: false),
-      ColumnConfig(
-          index: 4,
-          name: "last_update",
-          label: 'Last Update',
-          tooltips: 'When the file was received',
-          isNumeric: false),
-    ],
+    columns: fileKeyStagingColumns,
     sortColumnName: 'last_update',
     sortAscending: false,
     rowsPerPage: 10,
@@ -808,8 +1161,9 @@ final Map<String, TableConfig> _tableConfigurations = {
   // Process Input Data Table
   DTKeys.processInputTable: TableConfig(
     key: DTKeys.processInputTable,
-    schemaName: 'jetsapi',
-    tableName: 'process_input',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'process_input'),
+    ],
     label: 'Process Input',
     apiPath: '/dataTable',
     isCheckboxVisible: true,
@@ -827,8 +1181,10 @@ final Map<String, TableConfig> _tableConfigurations = {
           navigationParams: {
             FSK.key: 0,
             FSK.client: 1,
-            FSK.objectType: 2,
-            FSK.sourceType: 4,
+            FSK.org: 2,
+            FSK.objectType: 3,
+            FSK.sourceType: 5,
+            FSK.lookbackPeriods:6,
           }),
       ActionConfig(
           actionType: DataTableActionType.showDialog,
@@ -839,15 +1195,72 @@ final Map<String, TableConfig> _tableConfigurations = {
           isEnabledWhenHavingSelectedRows: true,
           configForm: FormKeys.processMapping,
           navigationParams: {
-            FSK.tableName: 3,
+            FSK.tableName: 4,
             FSK.processInputKey: 0,
-            FSK.objectType: 2
+            FSK.objectType: 3
           }),
     ],
     formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
       DataTableFormStateOtherColumnConfig(
         stateKey: FSK.tableName,
+        columnIdx: 4,
+      ),
+    ]),
+    columns: processInputColumns,
+    sortColumnName: 'last_update',
+    sortAscending: false,
+    rowsPerPage: 10,
+  ),
+
+  // Source Config Table
+  DTKeys.sourceConfigTable: TableConfig(
+    key: DTKeys.sourceConfigTable,
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'source_config')
+    ],
+    label: 'Source Config',
+    apiPath: '/dataTable',
+    isCheckboxVisible: true,
+    isCheckboxSingleSelect: true,
+    whereClauses: [],
+    actions: [
+      ActionConfig(
+          actionType: DataTableActionType.showDialog,
+          key: 'addSourceConfig',
+          label: 'Add/Update Source Config',
+          style: ActionStyle.primary,
+          isVisibleWhenCheckboxVisible: null,
+          isEnabledWhenHavingSelectedRows: null,
+          configForm: FormKeys.addSourceConfig,
+          navigationParams: {
+            FSK.key: 0,
+            FSK.client: 1,
+            FSK.org: 2,
+            FSK.objectType: 3,
+            FSK.automated: 4,
+            FSK.domainKeysJson: 6,
+          }),
+    ],
+    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
+      DataTableFormStateOtherColumnConfig(
+        stateKey: FSK.client,
+        columnIdx: 1,
+      ),
+      DataTableFormStateOtherColumnConfig(
+        stateKey: FSK.org,
+        columnIdx: 2,
+      ),
+      DataTableFormStateOtherColumnConfig(
+        stateKey: FSK.objectType,
         columnIdx: 3,
+      ),
+      DataTableFormStateOtherColumnConfig(
+        stateKey: FSK.automated,
+        columnIdx: 4,
+      ),
+      DataTableFormStateOtherColumnConfig(
+        stateKey: FSK.tableName,
+        columnIdx: 5,
       ),
     ]),
     columns: [
@@ -866,34 +1279,34 @@ final Map<String, TableConfig> _tableConfigurations = {
           isNumeric: false),
       ColumnConfig(
           index: 2,
+          name: "org",
+          label: 'Organization',
+          tooltips: 'Client' 's organization',
+          isNumeric: false),
+      ColumnConfig(
+          index: 3,
           name: "object_type",
           label: 'Object Type',
           tooltips: 'Type of objects in file',
           isNumeric: false),
       ColumnConfig(
-          index: 3,
+          index: 4,
+          name: "automated",
+          label: 'Automated',
+          tooltips: 'Is load automated? (true: 1, false: 0)',
+          isNumeric: true),
+      ColumnConfig(
+          index: 5,
           name: "table_name",
           label: 'Table Name',
-          tooltips: 'Table where the file was loaded',
+          tooltips: 'Table where to load the file',
           isNumeric: false,
           isHidden: false),
       ColumnConfig(
-          index: 4,
-          name: "source_type",
-          label: 'Source Type',
-          tooltips: 'Source of the input data, either File or Domain Table',
-          isNumeric: false),
-      ColumnConfig(
-          index: 5,
-          name: "entity_rdf_type",
-          label: 'Domain Class',
-          tooltips: 'Canonical model for the Object Type',
-          isNumeric: false),
-      ColumnConfig(
           index: 6,
-          name: "status",
-          label: 'Status',
-          tooltips: "Status of the Process Input and it's mapping",
+          name: "domain_keys_json",
+          label: 'Domain Keys (json)',
+          tooltips: 'Column(s) for row' 's domain key(s) (json-encoded string)',
           isNumeric: false),
       ColumnConfig(
           index: 7,
@@ -913,110 +1326,12 @@ final Map<String, TableConfig> _tableConfigurations = {
     rowsPerPage: 10,
   ),
 
-  // Source Config Table
-  DTKeys.sourceConfigTable: TableConfig(
-    key: DTKeys.sourceConfigTable,
-    schemaName: 'jetsapi',
-    tableName: 'source_config',
-    label: 'Source Config',
-    apiPath: '/dataTable',
-    isCheckboxVisible: true,
-    isCheckboxSingleSelect: true,
-    whereClauses: [],
-    actions: [
-      ActionConfig(
-          actionType: DataTableActionType.showDialog,
-          key: 'addSourceConfig',
-          label: 'Add/Update Source Config',
-          style: ActionStyle.primary,
-          isVisibleWhenCheckboxVisible: null,
-          isEnabledWhenHavingSelectedRows: null,
-          configForm: FormKeys.addSourceConfig,
-          navigationParams: {
-            FSK.key: 0,
-            FSK.client: 1,
-            FSK.objectType: 2,
-            FSK.domainKeysJson: 4,
-          }),
-      ActionConfig(
-          actionType: DataTableActionType.showDialog,
-          key: 'addClient',
-          label: 'Add Client',
-          style: ActionStyle.secondary,
-          isVisibleWhenCheckboxVisible: null,
-          isEnabledWhenHavingSelectedRows: null,
-          configForm: FormKeys.addClient),
-    ],
-    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
-      DataTableFormStateOtherColumnConfig(
-        stateKey: FSK.client,
-        columnIdx: 1,
-      ),
-      DataTableFormStateOtherColumnConfig(
-        stateKey: FSK.objectType,
-        columnIdx: 2,
-      ),
-      DataTableFormStateOtherColumnConfig(
-        stateKey: FSK.tableName,
-        columnIdx: 3,
-      ),
-    ]),
-    columns: [
-      ColumnConfig(
-          index: 0,
-          name: "key",
-          label: 'Key',
-          tooltips: 'Row Primary Key',
-          isNumeric: true,
-          isHidden: true),
-      ColumnConfig(
-          index: 1,
-          name: "client",
-          label: 'Client',
-          tooltips: 'Client the file came from',
-          isNumeric: false),
-      ColumnConfig(
-          index: 2,
-          name: "object_type",
-          label: 'Object Type',
-          tooltips: 'Type of objects in file',
-          isNumeric: false),
-      ColumnConfig(
-          index: 3,
-          name: "table_name",
-          label: 'Table Name',
-          tooltips: 'Table where to load the file',
-          isNumeric: false,
-          isHidden: false),
-      ColumnConfig(
-          index: 4,
-          name: "domain_keys_json",
-          label: 'Domain Keys (json)',
-          tooltips: 'Column(s) for row' 's domain key(s) (json-encoded string)',
-          isNumeric: false),
-      ColumnConfig(
-          index: 5,
-          name: "user_email",
-          label: 'User',
-          tooltips: 'Who created the record',
-          isNumeric: false),
-      ColumnConfig(
-          index: 6,
-          name: "last_update",
-          label: 'Loaded At',
-          tooltips: 'Indicates when the record was created',
-          isNumeric: false),
-    ],
-    sortColumnName: 'last_update',
-    sortAscending: false,
-    rowsPerPage: 10,
-  ),
-
   // Process Mapping Data Table
   DTKeys.processMappingTable: TableConfig(
     key: DTKeys.processMappingTable,
-    schemaName: 'jetsapi',
-    tableName: 'process_mapping',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'process_mapping')
+    ],
     label: 'Process Input Mapping',
     apiPath: '/dataTable',
     isCheckboxVisible: false,
@@ -1100,8 +1415,7 @@ final Map<String, TableConfig> _tableConfigurations = {
   // Rule Config Data Table
   DTKeys.ruleConfigTable: TableConfig(
     key: DTKeys.ruleConfigTable,
-    schemaName: 'jetsapi',
-    tableName: 'rule_config',
+    fromClauses: [FromClause(schemaName: 'jetsapi', tableName: 'rule_config')],
     label: 'Rules Configuration',
     apiPath: '/dataTable',
     isCheckboxVisible: false,
@@ -1180,8 +1494,9 @@ final Map<String, TableConfig> _tableConfigurations = {
   // Pipeline Config Data Table for Pipeline Config Forms
   DTKeys.pipelineConfigTable: TableConfig(
     key: DTKeys.pipelineConfigTable,
-    schemaName: 'jetsapi',
-    tableName: 'pipeline_config',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'pipeline_config')
+    ],
     label: 'Pipeline Configuration',
     apiPath: '/dataTable',
     isCheckboxVisible: true,
@@ -1306,8 +1621,9 @@ final Map<String, TableConfig> _tableConfigurations = {
   // for selecting FSK.mainProcessInputKey
   FSK.mainProcessInputKey: TableConfig(
     key: FSK.mainProcessInputKey,
-    schemaName: 'jetsapi',
-    tableName: 'process_input',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'process_input')
+    ],
     label: 'Main Process Input',
     apiPath: '/dataTable',
     isCheckboxVisible: true,
@@ -1319,70 +1635,14 @@ final Map<String, TableConfig> _tableConfigurations = {
     formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
       DataTableFormStateOtherColumnConfig(
         stateKey: FSK.mainObjectType,
-        columnIdx: 2,
+        columnIdx: 3,
       ),
       DataTableFormStateOtherColumnConfig(
         stateKey: FSK.mainSourceType,
-        columnIdx: 4,
+        columnIdx: 5,
       ),
     ]),
-    columns: [
-      ColumnConfig(
-          index: 0,
-          name: "key",
-          label: 'Key',
-          tooltips: 'Row Primary Key',
-          isNumeric: true,
-          isHidden: true),
-      ColumnConfig(
-          index: 1,
-          name: "client",
-          label: 'Client',
-          tooltips: 'Client the file came from',
-          isNumeric: false),
-      ColumnConfig(
-          index: 2,
-          name: "object_type",
-          label: 'Object Type',
-          tooltips: 'Type of objects in file',
-          isNumeric: false),
-      ColumnConfig(
-          index: 3,
-          name: "table_name",
-          label: 'Table Name',
-          tooltips: 'Table where the file was loaded',
-          isNumeric: false),
-      ColumnConfig(
-          index: 4,
-          name: "source_type",
-          label: 'Source Type',
-          tooltips: 'Source of the input data, either File or Domain Table',
-          isNumeric: false),
-      ColumnConfig(
-          index: 5,
-          name: "entity_rdf_type",
-          label: 'Domain Class',
-          tooltips: 'Canonical model for the Object Type',
-          isNumeric: false),
-      ColumnConfig(
-          index: 6,
-          name: "status",
-          label: 'Status',
-          tooltips: "Status of the Process Input and it's mapping",
-          isNumeric: false),
-      ColumnConfig(
-          index: 7,
-          name: "user_email",
-          label: 'User',
-          tooltips: 'Who created the record',
-          isNumeric: false),
-      ColumnConfig(
-          index: 8,
-          name: "last_update",
-          label: 'Loaded At',
-          tooltips: 'Indicates when the record was created',
-          isNumeric: false),
-    ],
+    columns: processInputColumns,
     sortColumnName: 'last_update',
     sortAscending: false,
     rowsPerPage: 10,
@@ -1392,8 +1652,9 @@ final Map<String, TableConfig> _tableConfigurations = {
   // for selecting FSK.mergedProcessInputKeys
   FSK.mergedProcessInputKeys: TableConfig(
     key: FSK.mergedProcessInputKeys,
-    schemaName: 'jetsapi',
-    tableName: 'process_input',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'process_input')
+    ],
     label: 'Merged Process Inputs',
     apiPath: '/dataTable',
     isCheckboxVisible: true,
@@ -1404,63 +1665,7 @@ final Map<String, TableConfig> _tableConfigurations = {
     actions: [],
     formStateConfig:
         DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: []),
-    columns: [
-      ColumnConfig(
-          index: 0,
-          name: "key",
-          label: 'Key',
-          tooltips: 'Row Primary Key',
-          isNumeric: true,
-          isHidden: true),
-      ColumnConfig(
-          index: 1,
-          name: "client",
-          label: 'Client',
-          tooltips: 'Client the file came from',
-          isNumeric: false),
-      ColumnConfig(
-          index: 2,
-          name: "object_type",
-          label: 'Object Type',
-          tooltips: 'Type of objects in file',
-          isNumeric: false),
-      ColumnConfig(
-          index: 3,
-          name: "table_name",
-          label: 'Table Name',
-          tooltips: 'Table where the file was loaded',
-          isNumeric: false),
-      ColumnConfig(
-          index: 4,
-          name: "source_type",
-          label: 'Source Type',
-          tooltips: 'Source of the input data, either File or Domain Table',
-          isNumeric: false),
-      ColumnConfig(
-          index: 5,
-          name: "entity_rdf_type",
-          label: 'Domain Class',
-          tooltips: 'Canonical model for the Object Type',
-          isNumeric: false),
-      ColumnConfig(
-          index: 6,
-          name: "status",
-          label: 'Status',
-          tooltips: "Status of the Process Input and it's mapping",
-          isNumeric: false),
-      ColumnConfig(
-          index: 7,
-          name: "user_email",
-          label: 'User',
-          tooltips: 'Who created the record',
-          isNumeric: false),
-      ColumnConfig(
-          index: 8,
-          name: "last_update",
-          label: 'Loaded At',
-          tooltips: 'Indicates when the record was created',
-          isNumeric: false),
-    ],
+    columns: processInputColumns,
     sortColumnName: 'last_update',
     sortAscending: false,
     rowsPerPage: 10,
@@ -1469,8 +1674,9 @@ final Map<String, TableConfig> _tableConfigurations = {
   // Pipeline Config Data Table for Pipeline Execution Forms
   FSK.pipelineConfigKey: TableConfig(
     key: FSK.pipelineConfigKey,
-    schemaName: 'jetsapi',
-    tableName: 'pipeline_config',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'pipeline_config')
+    ],
     label: 'Pipeline Configuration',
     apiPath: '/dataTable',
     isCheckboxVisible: true,
@@ -1563,16 +1769,65 @@ final Map<String, TableConfig> _tableConfigurations = {
     rowsPerPage: 10,
   ),
 
-  // Input Registry Table for Home screen
-  DTKeys.inputRegistryTable: TableConfig(
-    key: DTKeys.inputRegistryTable,
-    schemaName: 'jetsapi',
-    tableName: 'input_registry',
-    label: 'Input Registry',
+  // Source Config Table for Pipeline Execution Forms
+  FSK.sourcePeriodKey: TableConfig(
+    key: FSK.sourcePeriodKey,
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'source_period')
+    ],
+    label: 'Source Period of the Input Sources',
     apiPath: '/dataTable',
     isCheckboxVisible: true,
     isCheckboxSingleSelect: true,
     whereClauses: [],
+    actions: [],
+    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: []),
+    columns: [
+      ColumnConfig(
+          index: 0,
+          name: "key",
+          label: 'Key',
+          tooltips: 'Row Primary Key',
+          isNumeric: true,
+          isHidden: true),
+      ColumnConfig(
+          index: 1,
+          name: "year",
+          label: 'Year',
+          tooltips: 'Year the file was received',
+          isNumeric: true),
+      ColumnConfig(
+          index: 2,
+          name: "month",
+          label: 'Month',
+          tooltips: 'Month of the year the file was received',
+          isNumeric: true),
+      ColumnConfig(
+          index: 3,
+          name: "day",
+          label: 'Day',
+          tooltips: 'Day of the month the file was received',
+          isNumeric: true),
+    ],
+    sortColumnName: 'year',
+    sortAscending: false,
+    rowsPerPage: 10,
+  ),
+
+  // Input Registry Table for Home screen
+  DTKeys.inputRegistryTable: TableConfig(
+    key: DTKeys.inputRegistryTable,
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'input_registry'),
+      FromClause(schemaName: 'jetsapi', tableName: 'source_period')
+    ],
+    label: 'Input Registry',
+    apiPath: '/dataTable',
+    isCheckboxVisible: true,
+    isCheckboxSingleSelect: true,
+    whereClauses: [
+      WhereClause(column: "source_period_key", joinWith: "source_period.key"),
+    ],
     actions: [
       ActionConfig(
           actionType: DataTableActionType.showScreen,
@@ -1582,7 +1837,7 @@ final Map<String, TableConfig> _tableConfigurations = {
           isVisibleWhenCheckboxVisible: null,
           isEnabledWhenHavingSelectedRows: true,
           configScreenPath: domainTableViewerPath,
-          navigationParams: {'table': 5, 'session_id': 6}),
+          navigationParams: {'table': 9, 'session_id': 10}),
       ActionConfig(
           actionType: DataTableActionType.refreshTable,
           key: 'refreshTable',
@@ -1591,67 +1846,9 @@ final Map<String, TableConfig> _tableConfigurations = {
           isVisibleWhenCheckboxVisible: null,
           isEnabledWhenHavingSelectedRows: null),
     ],
-    formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
-      DataTableFormStateOtherColumnConfig(
-          stateKey: FSK.mainInputFileKey, columnIdx: 3),
-    ]),
-    columns: [
-      ColumnConfig(
-          index: 0,
-          name: "key",
-          label: 'Key',
-          tooltips: 'Input Registry Key',
-          isNumeric: true,
-          isHidden: false),
-      ColumnConfig(
-          index: 1,
-          name: "client",
-          label: 'Client',
-          tooltips: 'Client the file came from',
-          isNumeric: false),
-      ColumnConfig(
-          index: 2,
-          name: "object_type",
-          label: 'Object Type',
-          tooltips: 'Type of objects in file',
-          isNumeric: false),
-      ColumnConfig(
-          index: 3,
-          name: "file_key",
-          label: 'File Key',
-          tooltips: 'File Key of the loaded file',
-          isNumeric: false),
-      ColumnConfig(
-          index: 4,
-          name: "source_type",
-          label: 'Source Type',
-          tooltips: 'Source of the input data, either File or Domain Table',
-          isNumeric: false),
-      ColumnConfig(
-          index: 5,
-          name: "table_name",
-          label: 'Table Name',
-          tooltips: 'Table where the data reside',
-          isNumeric: false),
-      ColumnConfig(
-          index: 6,
-          name: "session_id",
-          label: 'Session ID',
-          tooltips: 'Session ID of the file load job',
-          isNumeric: false),
-      ColumnConfig(
-          index: 7,
-          name: "user_email",
-          label: 'User',
-          tooltips: 'Who created the record',
-          isNumeric: false),
-      ColumnConfig(
-          index: 8,
-          name: "last_update",
-          label: 'Loaded At',
-          tooltips: 'Indicates when the record was created',
-          isNumeric: false),
-    ],
+    formStateConfig:
+        DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: []),
+    columns: inputRegistryColumns,
     sortColumnName: 'last_update',
     sortAscending: false,
     rowsPerPage: 10,
@@ -1661,8 +1858,10 @@ final Map<String, TableConfig> _tableConfigurations = {
   // for selecting FSK.mainInputRegistryKey
   FSK.mainInputRegistryKey: TableConfig(
     key: FSK.mainInputRegistryKey,
-    schemaName: 'jetsapi',
-    tableName: 'input_registry',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'input_registry'),
+      FromClause(schemaName: 'jetsapi', tableName: 'source_period')
+    ],
     label: 'Main Process Input Source',
     apiPath: '/dataTable',
     isCheckboxVisible: true,
@@ -1671,80 +1870,29 @@ final Map<String, TableConfig> _tableConfigurations = {
       WhereClause(column: "client", formStateKey: FSK.client),
       WhereClause(column: "object_type", formStateKey: FSK.mainObjectType),
       WhereClause(column: "source_type", formStateKey: FSK.mainSourceType),
+      WhereClause(column: "source_period_key", formStateKey: FSK.sourcePeriodKey),
+      WhereClause(column: "source_period_key", joinWith: "source_period.key"),
     ],
     actions: [],
     formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
       DataTableFormStateOtherColumnConfig(
-          stateKey: FSK.mainInputFileKey, columnIdx: 4),
+          stateKey: FSK.mainInputFileKey, columnIdx: 7),
     ]),
-    columns: [
-      ColumnConfig(
-          index: 0,
-          name: "key",
-          label: 'Key',
-          tooltips: '',
-          isNumeric: true,
-          isHidden: true),
-      ColumnConfig(
-          index: 1,
-          name: "client",
-          label: 'Client',
-          tooltips: 'Client the file came from',
-          isNumeric: false),
-      ColumnConfig(
-          index: 2,
-          name: "object_type",
-          label: 'Object Type',
-          tooltips: 'Type of objects in file',
-          isNumeric: false),
-      ColumnConfig(
-          index: 3,
-          name: "source_type",
-          label: 'Source Type',
-          tooltips: 'Source of the input data, either File or Domain Table',
-          isNumeric: false),
-      ColumnConfig(
-          index: 4,
-          name: "file_key",
-          label: 'File Key',
-          tooltips: 'File Key of the loaded file',
-          isNumeric: false),
-      ColumnConfig(
-          index: 5,
-          name: "table_name",
-          label: 'Table Name',
-          tooltips: 'Table where the data reside',
-          isNumeric: false),
-      ColumnConfig(
-          index: 6,
-          name: "session_id",
-          label: 'Session ID',
-          tooltips: 'Session ID of the file load job',
-          isNumeric: false),
-      ColumnConfig(
-          index: 7,
-          name: "user_email",
-          label: 'User',
-          tooltips: 'Who created the record',
-          isNumeric: false),
-      ColumnConfig(
-          index: 8,
-          name: "last_update",
-          label: 'Loaded At',
-          tooltips: 'Indicates when the record was created',
-          isNumeric: false),
-    ],
+    columns: inputRegistryColumns,
     sortColumnName: 'last_update',
     sortAscending: false,
     rowsPerPage: 10,
   ),
 
-  // File Key Staging Data Table for Pipeline Exec Dialog (FormKeys.startPipeline)
+  //* TODO Remove this
+  // File Key Staging Table for Load & Start Pipeline Dialog (FormKeys.loadAndStartPipeline)
   // for selecting FSK.mainInputFileKey
   DTKeys.fileKeyStagingForPipelineMainProcessInput: TableConfig(
     key: DTKeys.fileKeyStagingForPipelineMainProcessInput,
-    schemaName: 'jetsapi',
-    tableName: 'file_key_staging',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'file_key_staging'),
+      FromClause(schemaName: 'jetsapi', tableName: 'source_period'),
+    ],
     label: 'Main Input Source - File Key Staging',
     apiPath: '/dataTable',
     isCheckboxVisible: true,
@@ -1752,109 +1900,30 @@ final Map<String, TableConfig> _tableConfigurations = {
     whereClauses: [
       WhereClause(column: "client", formStateKey: FSK.client),
       WhereClause(column: "object_type", formStateKey: FSK.mainObjectType),
+      WhereClause(column: "source_period_key", formStateKey: FSK.sourcePeriodKey),
+      WhereClause(column: "source_period_key", joinWith: "source_period.key"),
     ],
     actions: [],
     formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
       DataTableFormStateOtherColumnConfig(
-          stateKey: FSK.mainInputFileKey, columnIdx: 3),
+          stateKey: FSK.org, columnIdx: 2),
+      DataTableFormStateOtherColumnConfig(
+          stateKey: FSK.mainInputFileKey, columnIdx: 4),
     ]),
-    columns: [
-      ColumnConfig(
-          index: 0,
-          name: "key",
-          label: 'Primary Key',
-          tooltips: '',
-          isNumeric: true,
-          isHidden: true),
-      ColumnConfig(
-          index: 1,
-          name: "client",
-          label: 'Client',
-          tooltips: 'Client providing the input files',
-          isNumeric: false),
-      ColumnConfig(
-          index: 2,
-          name: "object_type",
-          label: 'Object Type',
-          tooltips: 'The type of object the file contains',
-          isNumeric: false),
-      ColumnConfig(
-          index: 3,
-          name: "file_key",
-          label: 'File Key',
-          tooltips: 'File key or path',
-          isNumeric: false),
-      ColumnConfig(
-          index: 4,
-          name: "last_update",
-          label: 'Last Update',
-          tooltips: 'When the file was received',
-          isNumeric: false),
-    ],
+    columns: fileKeyStagingColumns,
     sortColumnName: 'last_update',
     sortAscending: false,
     rowsPerPage: 10,
   ),
-  // DTKeys.fileKeyStagingForPipelineMergeProcessInput: TableConfig(
-  //   key: DTKeys.fileKeyStagingForPipelineMergeProcessInput,
-  //   schemaName: 'jetsapi',
-  //   tableName: 'file_key_staging',
-  //   label: 'Merge Input Source - File Key Staging',
-  //   apiPath: '/dataTable',
-  //   isCheckboxVisible: true,
-  //   isCheckboxSingleSelect: false,
-  //   whereClauses: [
-  //     WhereClause(column: "client", formStateKey: FSK.client),
-  //   ],
-  //   actions: [],
-  //   formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: [
-  //     DataTableFormStateOtherColumnConfig(
-  //         stateKey: FSK.mergedInputRegistryKeys, columnIdx: 3),
-  //   ]),
-  //   columns: [
-  //     ColumnConfig(
-  //         index: 0,
-  //         name: "key",
-  //         label: 'Primary Key',
-  //         tooltips: '',
-  //         isNumeric: true,
-  //         isHidden: true),
-  //     ColumnConfig(
-  //         index: 1,
-  //         name: "client",
-  //         label: 'Client',
-  //         tooltips: 'Client providing the input files',
-  //         isNumeric: false),
-  //     ColumnConfig(
-  //         index: 2,
-  //         name: "object_type",
-  //         label: 'Object Type',
-  //         tooltips: 'The type of object the file contains',
-  //         isNumeric: false),
-  //     ColumnConfig(
-  //         index: 3,
-  //         name: "file_key",
-  //         label: 'File Key',
-  //         tooltips: 'File key or path',
-  //         isNumeric: false),
-  //     ColumnConfig(
-  //         index: 4,
-  //         name: "last_update",
-  //         label: 'Last Update',
-  //         tooltips: 'When the file was received',
-  //         isNumeric: false),
-  //   ],
-  //   sortColumnName: 'last_update',
-  //   sortAscending: false,
-  //   rowsPerPage: 10,
-  // ),
 
   // Input Registry Table for Pipeline Exec Dialog (FormKeys.startPipeline)
   // for selecting FSK.mergeInputRegistryKeys
   FSK.mergedInputRegistryKeys: TableConfig(
     key: FSK.mergedInputRegistryKeys,
-    schemaName: 'jetsapi',
-    tableName: 'input_registry',
+    fromClauses: [
+      FromClause(schemaName: 'jetsapi', tableName: 'input_registry'),
+      FromClause(schemaName: 'jetsapi', tableName: 'source_period')
+    ],
     label: 'Merged Process Input Sources',
     apiPath: '/dataTable',
     isCheckboxVisible: true,
@@ -1863,67 +1932,13 @@ final Map<String, TableConfig> _tableConfigurations = {
       WhereClause(column: "client", formStateKey: FSK.client),
       WhereClause(column: "object_type", formStateKey: FSK.mainObjectType),
       WhereClause(column: "source_type", formStateKey: FSK.mainSourceType),
+      WhereClause(column: "source_period_key", formStateKey: FSK.sourcePeriodKey),
+      WhereClause(column: "source_period_key", joinWith: "source_period.key"),
     ],
     actions: [],
     formStateConfig:
         DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: []),
-    columns: [
-      ColumnConfig(
-          index: 0,
-          name: "key",
-          label: 'Key',
-          tooltips: '',
-          isNumeric: true,
-          isHidden: true),
-      ColumnConfig(
-          index: 1,
-          name: "client",
-          label: 'Client',
-          tooltips: 'Client the file came from',
-          isNumeric: false),
-      ColumnConfig(
-          index: 2,
-          name: "object_type",
-          label: 'Object Type',
-          tooltips: 'Type of objects in file',
-          isNumeric: false),
-      ColumnConfig(
-          index: 3,
-          name: "source_type",
-          label: 'Source Type',
-          tooltips: 'Source of the input data, either File or Domain Table',
-          isNumeric: false),
-      ColumnConfig(
-          index: 4,
-          name: "file_key",
-          label: 'File Key',
-          tooltips: 'File Key of the loaded file',
-          isNumeric: false),
-      ColumnConfig(
-          index: 5,
-          name: "table_name",
-          label: 'Table Name',
-          tooltips: 'Table where the data will be loaded from',
-          isNumeric: false),
-      ColumnConfig(
-          index: 6,
-          name: "session_id",
-          label: 'Session ID',
-          tooltips: 'Session ID of the file load job',
-          isNumeric: false),
-      ColumnConfig(
-          index: 7,
-          name: "user_email",
-          label: 'User',
-          tooltips: 'Who created the record',
-          isNumeric: false),
-      ColumnConfig(
-          index: 8,
-          name: "last_update",
-          label: 'Loaded At',
-          tooltips: 'Indicates when the record was created',
-          isNumeric: false),
-    ],
+    columns: inputRegistryColumns,
     sortColumnName: 'last_update',
     sortAscending: false,
     rowsPerPage: 10,
@@ -1932,8 +1947,7 @@ final Map<String, TableConfig> _tableConfigurations = {
   // Domain Table Viewer Data Table
   DTKeys.inputTable: TableConfig(
       key: DTKeys.inputTable,
-      schemaName: 'public',
-      tableName: '',
+      fromClauses: [FromClause(schemaName: 'public', tableName: '')],
       label: 'Staging Table or Domain Table Data',
       apiPath: '/dataTable',
       isCheckboxVisible: false,
@@ -1950,8 +1964,7 @@ final Map<String, TableConfig> _tableConfigurations = {
   // Users Administration Data Table
   DTKeys.usersTable: TableConfig(
     key: DTKeys.usersTable,
-    schemaName: 'jetsapi',
-    tableName: 'users',
+    fromClauses: [FromClause(schemaName: 'jetsapi', tableName: 'users')],
     label: 'User Administration',
     apiPath: '/dataTable',
     isCheckboxVisible: true,

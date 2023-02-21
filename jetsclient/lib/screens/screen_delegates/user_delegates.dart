@@ -35,14 +35,14 @@ String? loginFormValidator(
 }
 
 /// Login Form Actions
-Future<void> loginFormActions(BuildContext context,
+Future<String?> loginFormActions(BuildContext context,
     GlobalKey<FormState> formKey, JetsFormState formState, String actionKey,
     {int group = 0}) async {
   switch (actionKey) {
     case ActionKeys.login:
       var valid = formKey.currentState!.validate();
       if (!valid) {
-        return;
+        return null;
       }
       // Use a JSON encoded string to send
       var client = context.read<HttpClient>();
@@ -129,12 +129,12 @@ String? registrationFormValidator(
 }
 
 /// Registration Form Actions
-Future<void> registrationFormActions(BuildContext context,
+Future<String?> registrationFormActions(BuildContext context,
     GlobalKey<FormState> formKey, JetsFormState formState, String actionKey,
     {int group = 0}) async {
   var valid = formKey.currentState!.validate();
   if (!valid) {
-    return;
+    return null;
   }
   switch (actionKey) {
     case ActionKeys.register:
@@ -171,7 +171,7 @@ Future<void> registrationFormActions(BuildContext context,
 }
 
 /// User Administration Form Actions
-Future<void> userAdminFormActions(BuildContext context,
+Future<String?> userAdminFormActions(BuildContext context,
     GlobalKey<FormState> formKey, JetsFormState formState, String actionKey,
     {int group = 0}) async {
   var client = context.read<HttpClient>();
@@ -194,7 +194,7 @@ Future<void> userAdminFormActions(BuildContext context,
       }
       var encodedJsonBody = jsonEncode(<String, dynamic>{
         'action': 'insert_rows',
-        'table': 'update/users',
+        'fromClauses': [<String, String>{'table': 'update/users'}],
         'data': data,
       }, toEncodable: (_) => '');
       var result = await client.sendRequest(
@@ -217,7 +217,7 @@ Future<void> userAdminFormActions(BuildContext context,
       // Get confirmation to delete user
       var uc = await showDangerZoneDialog(context,
           'Are you sure you want to delete the selected user(s)?');
-      if (uc != 'OK') return;
+      if (uc != 'OK') return null;
       // Use a JSON encoded string to send
       var data = [];
       var emails = formState.getValue(0, DTKeys.usersTable) as List<dynamic>;
@@ -228,7 +228,7 @@ Future<void> userAdminFormActions(BuildContext context,
       }
       var encodedJsonBody = jsonEncode(<String, dynamic>{
         'action': 'insert_rows',
-        'table': 'delete/users',
+        'fromClauses': [<String, String>{'table': 'delete/users'}],
         'data': data,
       }, toEncodable: (_) => '');
       var result = await client.sendRequest(

@@ -34,6 +34,12 @@ type dbConnections struct {
 // WORKSPACE_LOOKUPS_DB_PATH location of lookup db (sqlite db)
 // JETS_DOMAIN_KEY_HASH_ALGO (values: md5, sha1, none (default))
 // JETS_DOMAIN_KEY_HASH_SEED (required for md5 and sha1. MUST be a valid uuid )
+// JETS_LOG_DEBUG (optional, if == 1 set glog=3, ps=false, poolSize=1 for debugging)
+// JETS_LOG_DEBUG (optional, if == 2 set glog=3, ps=true, poolSize=1 for debugging)
+// JETS_s3_INPUT_PREFIX (required for registrying the domain table with input_registry)
+// JETS_LOADER_SERVER_SM_ARN state machine arn
+// JETS_LOADER_SM_ARN state machine arn
+// JETS_SERVER_SM_ARN state machine arn
 // GLOG_V log level
 
 // Command Line Arguments
@@ -129,6 +135,11 @@ func doJob() error {
 	log.Printf("Command Line Argument: serverFailedMetric %s\n", *failedMetric)
 	log.Printf("ENV JETS_DOMAIN_KEY_HASH_ALGO: %s\n",os.Getenv("JETS_DOMAIN_KEY_HASH_ALGO"))
 	log.Printf("ENV JETS_DOMAIN_KEY_HASH_SEED: %s\n",os.Getenv("JETS_DOMAIN_KEY_HASH_SEED"))
+	log.Printf("ENV JETS_LOG_DEBUG: %s\n",os.Getenv("JETS_LOG_DEBUG"))
+	log.Printf("ENV JETS_LOADER_SERVER_SM_ARN: %s\n",os.Getenv("JETS_LOADER_SERVER_SM_ARN"))
+	log.Printf("ENV JETS_LOADER_SM_ARN: %s\n",os.Getenv("JETS_LOADER_SM_ARN"))
+	log.Printf("ENV JETS_SERVER_SM_ARN: %s\n",os.Getenv("JETS_SERVER_SM_ARN"))
+	log.Printf("ENV JETS_s3_INPUT_PREFIX: %s\n",os.Getenv("JETS_s3_INPUT_PREFIX"))
 	log.Printf("Command Line Argument: GLOG_v is set to %d\n", glogv)
 	if !*doNotLockSessionId {
 		log.Printf("The sessionId will not be locked and output table will not be registered to input_registry.")
@@ -141,7 +152,7 @@ func doJob() error {
 	dbc = dbConnections{mainNode: dbNode{dsn: dsn, dbpool: dbpool}, joinNodes: make([]dbNode, nbrDbNodes)}
 	defer dbc.mainNode.dbpool.Close()
 	for i, dsn := range dsnSplit {
-		log.Printf("db node %d is %s\n", i, dsn)
+		// log.Printf("db node %d is %s\n", i, dsn)
 		dbpool, err = pgxpool.Connect(context.Background(), dsn)
 		if err != nil {
 			return fmt.Errorf("while opening db connection on %s: %v", dsn, err)
@@ -239,6 +250,11 @@ func main() {
 		hasErr = true
 		errMsg = append(errMsg, "aws region (-awsRegion) must be provided when -awsDnsSecret is provided.")
 	}
+	// Check we have required env var
+	if os.Getenv("JETS_s3_INPUT_PREFIX") == "" {
+		hasErr = true
+		errMsg = append(errMsg, "Env var JETS_s3_INPUT_PREFIX must be provided.")
+	}
 	if *userEmail == "" {
 		hasErr = true
 		errMsg = append(errMsg, "user email (-userEmail) must be provided.")
@@ -286,14 +302,34 @@ func main() {
 	} else {
 		outTableSlice = make([]string, 0)
 	}
+
+	// If not in dev mode, must have state machine arn defined
+	if os.Getenv("JETSTORE_DEV_MODE") == "" {
+		if os.Getenv("JETS_LOADER_SERVER_SM_ARN")=="" || os.Getenv("JETS_LOADER_SM_ARN")=="" || os.Getenv("JETS_SERVER_SM_ARN")=="" {
+			hasErr = true
+			errMsg = append(errMsg, "Env var JETS_LOADER_SERVER_SM_ARN, JETS_LOADER_SM_ARN, JETS_SERVER_SM_ARN required when not in dev mode.")
+		}
+	}
+
 	if hasErr {
 		for _, msg := range errMsg {
 			log.Println("**", msg)
 		}
 		panic(errMsg)
 	}
-	v, _ := strconv.ParseInt(os.Getenv("GLOG_v"), 10, 32)
-	glogv = int(v)
+	switch os.Getenv("JETS_LOG_DEBUG") {
+	case "1":
+		glogv = 3
+		*ps = false
+		*poolSize = 1
+	case "2":
+		glogv = 3
+		*ps = true
+		*poolSize = 1
+	default:
+		v, _ := strconv.ParseInt(os.Getenv("GLOG_v"), 10, 32)
+		glogv = int(v)	
+	}
 
 	err := doJob()
 	if err != nil {

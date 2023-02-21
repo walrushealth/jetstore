@@ -51,7 +51,7 @@ import (
 // JETS_s3_OUTPUT_PREFIX Output file key prefix
 // JETS_DOMAIN_KEY_HASH_ALGO (values: md5, sha1, none (default))
 // JETS_DOMAIN_KEY_HASH_SEED (required for md5 and sha1. MUST be a valid uuid )
-// JETS_RESET_DOMAIN_TABLE_ON_STARTUP (value: yes, will reset the domain table if database version is less than build version)
+// JETS_RESET_DOMAIN_TABLE_ON_STARTUP (value: yes, will reset the domain table, run workspace db init script, and upgrade system tables if database version is less than build version)
 
 var awsDsnSecret       = flag.String("awsDsnSecret", "", "aws secret with dsn definition (aws integration) (required unless -dsn is provided)")
 var awsApiSecret       = flag.String("awsApiSecret", "", "aws secret with string to use for signing jwt tokens (aws integration) (required unless -dsn is provided)")
@@ -144,13 +144,6 @@ func main() {
 			errMsg = append(errMsg, "Token expiration must be 5 min or more. (-tokenExpiration)")
 		}
 	}
-	if hasErr {
-		flag.Usage()
-		for _, msg := range errMsg {
-			fmt.Println("**",msg)
-		}
-		panic(errMsg)
-	}
 
 	// This is used only in DEV MODE
 	nbrShards = 1
@@ -174,6 +167,18 @@ func main() {
 					}
 				}
 		}
+	} else {
+		if os.Getenv("JETS_LOADER_SERVER_SM_ARN")=="" || os.Getenv("JETS_LOADER_SM_ARN")=="" || os.Getenv("JETS_SERVER_SM_ARN")=="" {
+			hasErr = true
+			errMsg = append(errMsg, "Env var JETS_LOADER_SERVER_SM_ARN, JETS_LOADER_SM_ARN, JETS_SERVER_SM_ARN required when not in dev mode.")
+		}
+	}
+	if hasErr {
+		flag.Usage()
+		for _, msg := range errMsg {
+			fmt.Println("**",msg)
+		}
+		panic(errMsg)
 	}
 	
 	fmt.Println("apiserver argument:")

@@ -19,7 +19,9 @@ import (
 	"time"
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
+	"github.com/artisoft-io/jetstore/jets/datatable"
 	"github.com/artisoft-io/jetstore/jets/schema"
+	"github.com/artisoft-io/jetstore/jets/user"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -50,8 +52,16 @@ func (s *chartype) Set(value string) error {
 // JETS_DSN_URI_VALUE
 // JETS_DSN_JSON_VALUE
 // LOADER_ERR_DIR
-// JETS_DOMAIN_KEY_HASH_ALGO (values: md5, sha1, none (default))
+// JETS_DOMAIN_KEY_HASH_ALGO (values: md5, sha1, none (default: none))
 // JETS_DOMAIN_KEY_HASH_SEED (required for md5 and sha1. MUST be a valid uuid )
+// JETS_INPUT_ROW_JETS_KEY_ALGO (values: uuid, row_hash, domain_key (default: uuid))
+// JETS_ADMIN_EMAIL (set as admin in dockerfile)
+// JETSTORE_DEV_MODE Indicates running in dev mode
+// AWS_API_SECRET or API_SECRET
+// JETS_LOADER_SERVER_SM_ARN state machine arn
+// JETS_LOADER_SM_ARN state machine arn
+// JETS_SERVER_SM_ARN state machine arn
+// JETS_LOADER_CHUNCK_SIZE buffer size for input lines, default 200K
 var awsDsnSecret = flag.String("awsDsnSecret", "", "aws secret with dsn definition (aws integration) (required unless -dsn is provided)")
 var awsRegion = flag.String("awsRegion", "", "aws region to connect to for aws secret and bucket (aws integration) (required if -awsDsnSecret or -awsBucket is provided)")
 var awsBucket = flag.String("awsBucket", "", "Bucket having the the input csv file (aws integration)")
@@ -71,6 +81,12 @@ var tableName string
 var domainKeysJson string
 var sep_flag chartype = '€'
 var errOutDir string
+var jetsInputRowJetsKeyAlgo string
+var clientOrg string
+var sourcePeriodKey int
+var inputRegistryKey []int
+var devMode bool
+var adminEmail string
 
 func init() {
 	flag.Var(&sep_flag, "sep", "Field separator, default is auto detect between pipe ('|') or comma (',')")
@@ -95,29 +111,47 @@ func truncateSessionId(dbpool *pgxpool.Pool) error {
 func registerCurrentLoad(copyCount int64, badRowCount int, dbpool *pgxpool.Pool, 
 	dkInfo *schema.HeadersAndDomainKeysInfo, status string, errMessage string) error {
 	stmt := `INSERT INTO jetsapi.input_loader_status (
-		object_type, table_name, client, file_key, session_id, status, error_message,
+		object_type, table_name, client, org, file_key, session_id, source_period_key, status, error_message,
 		load_count, bad_row_count, user_email) 
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT ON CONSTRAINT input_loader_status_unique_cstraint
 			DO UPDATE SET (status, error_message, load_count, bad_row_count, user_email, last_update) =
 			(EXCLUDED.status, EXCLUDED.error_message, EXCLUDED.load_count, EXCLUDED.bad_row_count, EXCLUDED.user_email, DEFAULT)`
 	_, err := dbpool.Exec(context.Background(), stmt, 
-		*objectType, tableName, *client, *inFile, *sessionId, status, errMessage, copyCount, badRowCount, *userEmail)
+		*objectType, tableName, *client, clientOrg, *inFile, *sessionId, sourcePeriodKey, status, errMessage, copyCount, badRowCount, *userEmail)
 	if err != nil {
 		return fmt.Errorf("error inserting in jetsapi.input_loader_status table: %v", err)
 	}
+	log.Println("Updated input_loader_status table with main object type:", *objectType,"client", *client, "org", clientOrg)
 	if status == "completed" && dkInfo != nil {
+		inputRegistryKey = make([]int, len(dkInfo.DomainKeysInfoMap))
+		ipos := 0
 		for objType := range dkInfo.DomainKeysInfoMap {
-			log.Println("Registering staging table with object type:", objType)
+			log.Println("Registering staging table with object type:", objType,"client", *client, "org", clientOrg)
 			stmt = `INSERT INTO jetsapi.input_registry (
-				client, object_type, file_key, table_name, source_type, session_id, user_email) 
-				VALUES ($1, $2, $3, $4, 'file', $5, $6)`
-			_, err = dbpool.Exec(context.Background(), stmt, 
-				*client, objType, *inFile, tableName, *sessionId, *userEmail)
+				client, org, object_type, file_key, source_period_key, table_name, source_type, session_id, user_email) 
+				VALUES ($1, $2, $3, $4, $5, $6, 'file', $7, $8) RETURNING key`
+			err = dbpool.QueryRow(context.Background(), stmt, 
+				*client, clientOrg, objType, *inFile, sourcePeriodKey, tableName, *sessionId, *userEmail).Scan(&inputRegistryKey[ipos])
 			if err != nil {
 				return fmt.Errorf("error inserting in jetsapi.input_registry table: %v", err)
-			}	
+			}
+			ipos += 1
 		}
+		// Check for any process that are ready to kick off
+		context := datatable.NewContext(dbpool, devMode, *usingSshTunnel, nil, *nbrShards, &adminEmail)
+		token, err := user.CreateToken(*userEmail)
+		if err != nil {
+			return fmt.Errorf("error creating jwt token: %v", err)
+		}
+		context.StartPipelineOnInputRegistryInsert(&datatable.RegisterFileKeyAction{
+			Action: "register_keys",
+			Data: []map[string]interface{}{{
+				"input_registry_keys": inputRegistryKey,
+				"source_period_key": sourcePeriodKey,
+				"file_key": *inFile,
+			}},
+		}, token)
 	}
 	return nil
 }
@@ -127,6 +161,120 @@ func registerCurrentLoad(copyCount int64, badRowCount int, dbpool *pgxpool.Pool,
 // 	errMsg string
 // }
 
+func writeFile2DB(dbpool *pgxpool.Pool, headersDKInfo *schema.HeadersAndDomainKeysInfo, csvReader *csv.Reader) (int64, *[]int, error) {
+	var badRowsPos []int
+	headerPos := headersDKInfo.GetHeaderPos()
+	fileKeyPos := headersDKInfo.HeadersPosMap["file_key"]
+	sessionIdPos := headersDKInfo.HeadersPosMap["session_id"]
+	jetsKeyPos := headersDKInfo.HeadersPosMap["jets:key"]
+	lastUpdatePos := headersDKInfo.HeadersPosMap["last_update"]
+	lastUpdate := time.Now().UTC()
+
+	// Get the list of ObjectType from domainKeysJson if it's an elm, detault to *objectType
+	objTypes, err := schema.GetObjectTypesFromDominsKeyJson(domainKeysJson, *objectType)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	// Copy the file by partitions having filePartitionSize lines
+	var filePartitionSize int
+	if len(os.Getenv("JETS_LOADER_CHUNCK_SIZE")) > 0 {
+		filePartitionSize, err = strconv.Atoi(os.Getenv("JETS_LOADER_CHUNCK_SIZE"))
+		if err != nil {
+			return 0, nil, fmt.Errorf("while parsing JETS_LOADER_CHUNCK_SIZE: %v", err)
+		}	
+	} else {
+		filePartitionSize = 50000
+	}
+	log.Println("Using filePartitionSize of",filePartitionSize," (from env JETS_LOADER_CHUNCK_SIZE)")
+
+	var partitionIndex int
+	var copyCount int64
+	for {
+		inputRows := make([][]interface{}, 0, filePartitionSize)
+		// read and write up to filePartitionSize rows
+		for partitionIndex = 0; partitionIndex < filePartitionSize; partitionIndex++ {
+			record, err := csvReader.Read()
+			switch {
+			
+			case err == io.EOF:
+				// write to db what we have in this file partition
+				nrows, err := dbpool.CopyFrom(context.Background(), 
+					pgx.Identifier{tableName}, headersDKInfo.Headers, pgx.CopyFromRows(inputRows))
+				if err != nil {
+					return 0, nil, fmt.Errorf("while copy csv to table: %v", err)
+				}
+				// expected exit route
+				return copyCount + nrows, &badRowsPos, nil
+
+			case err != nil:
+				// get the details of the error
+				var details *csv.ParseError
+				if errors.As(err, &details) {
+					log.Printf("while reading csv records: %v", err)
+					for i := details.StartLine; i <= details.Line; i++ {
+						badRowsPos = append(badRowsPos, i)
+					}
+				} else {
+					return 0, nil, fmt.Errorf("unknown error while reading csv records: %v", err)
+				}
+
+			default:
+				copyRec := make([]interface{}, len(headersDKInfo.Headers))
+				for i, ipos := range headerPos {
+					if ipos < len(record) {
+						copyRec[i] = record[ipos]
+					}
+				}
+				// Set the file_key, session_id, and shard_id
+				copyRec[fileKeyPos] = *inFile
+				copyRec[sessionIdPos] = *sessionId
+				jetsKeyStr := uuid.New().String()
+				copyRec[lastUpdatePos] = lastUpdate
+				var mainDomainKey string
+				var mainDomainKeyPos int
+				for _,ot := range *objTypes {
+					groupingKey, shardId, err := headersDKInfo.ComputeGroupingKey(*nbrShards, &ot, &record, &jetsKeyStr)
+					if err != nil {
+						return 0, nil, err
+					}
+					domainKeyPos := headersDKInfo.DomainKeysInfoMap[ot].DomainKeyPos
+					if ot == *objectType {
+						mainDomainKey = groupingKey
+						mainDomainKeyPos = domainKeyPos
+					}
+					copyRec[domainKeyPos] = groupingKey
+					shardIdPos := headersDKInfo.DomainKeysInfoMap[ot].ShardIdPos
+					copyRec[shardIdPos] = shardId			
+				}
+				var buf strings.Builder
+				switch jetsInputRowJetsKeyAlgo {
+				case "row_hash":
+					for i := range record {
+						if !headersDKInfo.ReservedColumns[headersDKInfo.Headers[i]] {
+							// fmt.Println("row_hash with column",headersDKInfo.Headers[i])
+							buf.WriteString(record[i])
+						}
+					}
+					jetsKeyStr = uuid.NewSHA1(headersDKInfo.HashingSeed, []byte(buf.String())).String()
+					// fmt.Println("row_hash jetsKeyStr",jetsKeyStr)
+				case "domain_key":
+					jetsKeyStr = mainDomainKey
+				}
+				if headersDKInfo.IsDomainKeyIsJetsKey(objectType) {
+					copyRec[mainDomainKeyPos] = jetsKeyStr
+				}
+				copyRec[jetsKeyPos] = jetsKeyStr
+				inputRows = append(inputRows, copyRec)
+			}
+		}
+		// write the full partition of rows to the db
+		copyCount, err = dbpool.CopyFrom(context.Background(), pgx.Identifier{tableName}, headersDKInfo.Headers, pgx.CopyFromRows(inputRows))
+		if err != nil {
+			return 0, nil, fmt.Errorf("while copy csv to table: %v", err)
+		}		
+	}
+}
 // processFile
 // --------------------------------------------------------------------------------------
 func processFile(dbpool *pgxpool.Pool, fileHd, errFileHd *os.File) (*schema.HeadersAndDomainKeysInfo, int64, int, error) {
@@ -226,71 +374,12 @@ func processFile(dbpool *pgxpool.Pool, fileHd, errFileHd *os.File) (*schema.Head
 
 	// read the rest of the file
 	// ---------------------------------------
-	var badRowsPos []int
-	var rowid int64
-	headerPos := headersDKInfo.GetHeaderPos()
-	fileKeyPos := headersDKInfo.HeadersPosMap["file_key"]
-	sessionIdPos := headersDKInfo.HeadersPosMap["session_id"]
-	jetsKeyPos := headersDKInfo.HeadersPosMap["jets:key"]
-	lastUpdatePos := headersDKInfo.HeadersPosMap["last_update"]
-	lastUpdate := time.Now().UTC()
-
-	// Get the list of ObjectType from domainKeysJson if it's an elm, detault to *objectType
-	objTypes, err := schema.GetObjectTypesFromDominsKeyJson(domainKeysJson, *objectType)
+	copyCount, badRowsPosPtr, err := writeFile2DB(dbpool, headersDKInfo, csvReader)
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, 0, fmt.Errorf("while writing in_file %s to database: %v", *inFile, err)
 	}
-	inputRows := make([][]interface{}, 0)
-	for {
-		record, err := csvReader.Read()
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			// get the details of the error
-			var details *csv.ParseError
-			if errors.As(err, &details) {
-				log.Printf("while reading csv records: %v", err)
-				for i := details.StartLine; i <= details.Line; i++ {
-					badRowsPos = append(badRowsPos, i)
-				}
-			} else {
-				return nil, 0, 0, fmt.Errorf("unknown error while reading csv records: %v", err)
-			}
-		} else {
-			copyRec := make([]interface{}, len(headersDKInfo.Headers))
-			for i, ipos := range headerPos {
-				if ipos < len(record) {
-					copyRec[i] = record[ipos]
-				}
-			}
-			// Set the file_key, session_id, and shard_id
-			copyRec[fileKeyPos] = *inFile
-			copyRec[sessionIdPos] = *sessionId
-			jetsKeyStr := uuid.New().String()
-			copyRec[jetsKeyPos] = jetsKeyStr
-			copyRec[lastUpdatePos] = lastUpdate
-			for _,ot := range *objTypes {
-				groupingKey, shardId, err := headersDKInfo.ComputeGroupingKey(*nbrShards, &ot, &record, &jetsKeyStr)
-				if err != nil {
-					return nil, 0, 0, err
-				}
-				domainKeyPos := headersDKInfo.DomainKeysInfoMap[ot].DomainKeyPos
-				copyRec[domainKeyPos] = groupingKey
-				shardIdPos := headersDKInfo.DomainKeysInfoMap[ot].ShardIdPos
-				copyRec[shardIdPos] = shardId
-			}
-			inputRows = append(inputRows, copyRec)
-			rowid += 1
-		}
-	}
+	badRowsPos := *badRowsPosPtr
 
-	// write the sharded rows to the db using go routines...
-	// ---------------------------------------
-	var copyCount int64
-	copyCount, err = dbpool.CopyFrom(context.Background(), pgx.Identifier{tableName}, headersDKInfo.Headers, pgx.CopyFromRows(inputRows))
-	if err != nil {
-		return nil, 0, 0, fmt.Errorf("while copy csv to table: %v", err)
-	}
 	// // create a channel to writing the insert row results
 	// //* EXAMPLE/STARTING POINT TO HAVE CONCURRENT DB WRITTERS
 	// hasErrors := false
@@ -433,12 +522,22 @@ func coordinateWork() error {
 		return fmt.Errorf("error: the session id is already used")
 	}
 
+	// Get org and source_period_key from file_key_staging
+	// ---------------------------------------
+	err = dbpool.QueryRow(context.Background(), 
+		"SELECT org, source_period_key FROM jetsapi.file_key_staging WHERE file_key=$1", 
+		*inFile).Scan(&clientOrg, &sourcePeriodKey)
+	if err != nil {
+		return fmt.Errorf("query org, source_period_key from jetsapi.file_key_staging failed: %v", err)
+	}
+	fmt.Println("Got org",clientOrg,"and sourcePeriodKey",sourcePeriodKey,"from file_key_staging")
+
 	// Get the DomainKeysJson and tableName from source_config table
 	// ---------------------------------------
 	var dkJson sql.NullString
 	err = dbpool.QueryRow(context.Background(), 
-		"SELECT table_name, domain_keys_json FROM jetsapi.source_config WHERE client=$1 AND object_type=$2", 
-		*client, *objectType).Scan(&tableName, &dkJson)
+		"SELECT table_name, domain_keys_json FROM jetsapi.source_config WHERE client=$1 AND org=$2 AND object_type=$3", 
+		*client, clientOrg, *objectType).Scan(&tableName, &dkJson)
 	if err != nil {
 		return fmt.Errorf("query table_name, domain_keys_json from jetsapi.source_config failed: %v", err)
 	}
@@ -525,6 +624,19 @@ func main() {
 	hasErr := false
 	var errMsg []string
 	var err error
+	switch os.Getenv("JETS_INPUT_ROW_JETS_KEY_ALGO") {
+	case "uuid", "":
+		jetsInputRowJetsKeyAlgo = "uuid"
+	case "row_hash":
+		jetsInputRowJetsKeyAlgo = "row_hash"
+	case "domain_key":
+		jetsInputRowJetsKeyAlgo = "domain_key"
+	default:
+		hasErr = true
+		errMsg = append(errMsg, 
+			fmt.Sprintf("env var JETS_INPUT_ROW_JETS_KEY_ALGO has invalid value: %s, must be one of uuid, row_hash, domain_key (default: uuid if empty)",
+			os.Getenv("JETS_INPUT_ROW_JETS_KEY_ALGO")))
+	}
 	if *inFile == "" {
 		hasErr = true
 		errMsg = append(errMsg, "Input file name must be provided (-in_file).")
@@ -539,7 +651,7 @@ func main() {
 	}
 	if *objectType == "" {
 		hasErr = true
-		errMsg = append(errMsg, "Source location must be provided (-objectType).")
+		errMsg = append(errMsg, "Object type of the input file must be provided (-objectType).")
 	}
 	if *dsn == "" && *awsDsnSecret == "" {
 		*dsn = os.Getenv("JETS_DSN_URI_VALUE")
@@ -566,6 +678,34 @@ func main() {
 		hasErr = true
 		errMsg = append(errMsg, "aws region must be provided when using either -awsDsnSecret or -awsBucket.")
 	}
+
+
+	errOutDir = os.Getenv("LOADER_ERR_DIR")
+	adminEmail = os.Getenv("JETS_ADMIN_EMAIL")
+	_, devMode = os.LookupEnv("JETSTORE_DEV_MODE")
+	// Initialize user module -- for token generation
+	user.AdminEmail = adminEmail
+	// Get secret to sign jwt tokens
+	awsApiSecret := os.Getenv("AWS_API_SECRET")
+	apiSecret := os.Getenv("API_SECRET")
+	if apiSecret == "" && awsApiSecret != "" {
+		apiSecret, err = awsi.GetSecretValue(awsApiSecret, *awsRegion)
+		if err != nil {
+			hasErr = true
+			errMsg = append(errMsg, fmt.Sprintf("while getting apiSecret from aws secret: %v", err))
+		}
+	}
+	user.ApiSecret = apiSecret
+	user.TokenExpiration = 60
+
+	// If not in dev mode, must have state machine arn defined
+	if os.Getenv("JETSTORE_DEV_MODE") == "" {
+		if os.Getenv("JETS_LOADER_SERVER_SM_ARN")=="" || os.Getenv("JETS_LOADER_SM_ARN")=="" || os.Getenv("JETS_SERVER_SM_ARN")=="" {
+			hasErr = true
+			errMsg = append(errMsg, "Env var JETS_LOADER_SERVER_SM_ARN, JETS_LOADER_SM_ARN, JETS_SERVER_SM_ARN required when not in dev mode.")
+		}
+	}
+
 	if hasErr {
 		for _, msg := range errMsg {
 			fmt.Println("**", msg)
@@ -578,9 +718,7 @@ func main() {
 		sessionId = &sessId
 		log.Println("sessionId is set to", *sessionId)
 	}
-
-	errOutDir = os.Getenv("LOADER_ERR_DIR")
-
+	
 	fmt.Println("Loader argument:")
 	fmt.Println("----------------")
 	fmt.Println("Got argument: awsDsnSecret", *awsDsnSecret)
@@ -599,6 +737,10 @@ func main() {
 	fmt.Println("Got argument: loaderCompletedMetric", *completedMetric)
 	fmt.Println("Got argument: loaderFailedMetric", *failedMetric)
 	fmt.Println("Loader out dir (from env LOADER_ERR_DIR):", errOutDir)
+	fmt.Printf("ENV JETS_LOADER_SERVER_SM_ARN: %s\n",os.Getenv("JETS_LOADER_SERVER_SM_ARN"))
+	fmt.Printf("ENV JETS_LOADER_SM_ARN: %s\n",os.Getenv("JETS_LOADER_SM_ARN"))
+	fmt.Printf("ENV JETS_SERVER_SM_ARN: %s\n",os.Getenv("JETS_SERVER_SM_ARN"))
+	fmt.Printf("ENV JETS_LOADER_CHUNCK_SIZE: %s\n",os.Getenv("JETS_LOADER_CHUNCK_SIZE"))
 	if len(errOutDir) == 0 {
 		fmt.Println("Loader error file will be in same directory as input file.")
 	}
@@ -607,7 +749,13 @@ func main() {
 	}
 	fmt.Println("ENV JETS_DOMAIN_KEY_HASH_ALGO:",os.Getenv("JETS_DOMAIN_KEY_HASH_ALGO"))
 	fmt.Println("ENV JETS_DOMAIN_KEY_HASH_SEED:",os.Getenv("JETS_DOMAIN_KEY_HASH_SEED"))
- 
+	fmt.Println("ENV JETS_INPUT_ROW_JETS_KEY_ALGO:",os.Getenv("JETS_INPUT_ROW_JETS_KEY_ALGO"))
+	fmt.Println("ENV AWS_API_SECRET:",os.Getenv("AWS_API_SECRET"))
+	if devMode {
+		fmt.Println("Running in DEV MODE")
+		fmt.Println("Nbr Shards in DEV MODE: nbrShards", nbrShards)
+	}
+
 	err = coordinateWork()
 	if err != nil {
 		fmt.Println(err)

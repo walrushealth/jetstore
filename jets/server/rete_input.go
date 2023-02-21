@@ -26,18 +26,18 @@ type ReteInputContext struct {
 }
 
 // main processing function to execute rules
-func (ri *ReteInputContext) assertInputBundle(reteSession *bridge.ReteSession, inBundle *inputBundle, writeOutputc *map[string][]chan []interface{}) error {
+func (ri *ReteInputContext) assertInputBundle(reteSession *bridge.ReteSession, inBundle *groupedJetRows, writeOutputc *map[string][]chan []interface{}) error {
 	// Each row in inputRecords is a jets:Entity, with it's own jets:key
-	for _, bunRow := range inBundle.inputRows {
-		rowl := len(bunRow.inputRows)
+	for _, aJetRow := range inBundle.jetRowSlice {
+		rowl := len(aJetRow.rowData)
 		if rowl == 0 {
 			continue
 		}
 		var err error
-		if bunRow.processInput.sourceType == "file" {
-			err = ri.assertInputTextRecord(reteSession, &bunRow, writeOutputc)
+		if aJetRow.processInput.sourceType == "file" {
+			err = ri.assertInputTextRecord(reteSession, &aJetRow, writeOutputc)
 		} else {
-			err = ri.assertInputEntityRecord(reteSession, &bunRow, writeOutputc)
+			err = ri.assertInputEntityRecord(reteSession, &aJetRow, writeOutputc)
 		}
 		if err != nil {
 			return err
@@ -49,7 +49,7 @@ func (ri *ReteInputContext) assertInputBundle(reteSession *bridge.ReteSession, i
 func filterDigits(str string) string {
 	// Remove non digits characters
 	var buf strings.Builder
-	for _,c := range str {
+	for _, c := range str {
 		if unicode.IsDigit(c) {
 			buf.WriteRune(c)
 		}
@@ -71,17 +71,89 @@ func filterDouble(str string) string {
 	return buf.String()
 }
 
+func castToRdfType(objValue *string, inputColumnSpec *ProcessMap,
+	reteSession *bridge.ReteSession) (object *bridge.Resource, err error) {
+
+	switch inputColumnSpec.rdfType {
+	// case "null":
+	// 	object, err = ri.rw.js.NewNull()
+	case "resource":
+		object, err = reteSession.NewResource(*objValue)
+	case "int":
+		var v int
+		v, err = strconv.Atoi(*objValue)
+		if err == nil {
+			object, err = reteSession.NewIntLiteral(v)
+		}
+	case "bool":
+		v := 0
+		if len(*objValue) > 0 {
+			c := strings.ToLower((*objValue)[0:1])
+			switch c {
+			case "t", "1", "y":
+				v = 1
+			case "f", "0", "n":
+				v = 0
+			default:
+				err = fmt.Errorf("object is not boolean: %s", *objValue)
+			}
+		}
+		if err == nil {
+			object, err = reteSession.NewIntLiteral(v)
+		}
+	case "uint":
+		var v uint64
+		v, err = strconv.ParseUint(*objValue, 10, 32)
+		if err == nil {
+			object, err = reteSession.NewUIntLiteral(uint(v))
+		}
+	case "long":
+		var v int64
+		v, err = strconv.ParseInt(*objValue, 10, 64)
+		if err == nil {
+			object, err = reteSession.NewLongLiteral(v)
+		}
+	case "ulong":
+		var v uint64
+		v, err = strconv.ParseUint(*objValue, 10, 64)
+		if err == nil {
+			object, err = reteSession.NewULongLiteral(v)
+		}
+	case "double":
+		var v float64
+		v, err = strconv.ParseFloat(*objValue, 64)
+		if err == nil {
+			object, err = reteSession.NewDoubleLiteral(v)
+		}
+	case "text":
+		object, err = reteSession.NewTextLiteral(*objValue)
+	case "date":
+		object, err = reteSession.NewDateLiteral(*objValue)
+	case "datetime":
+		object, err = reteSession.NewDatetimeLiteral(*objValue)
+	default:
+		var cn string
+		if inputColumnSpec.inputColumn.Valid {
+			cn = inputColumnSpec.inputColumn.String
+		} else {
+			cn = "UNNAMED"
+		}
+		err = fmt.Errorf("ERROR unknown or invalid type for column %s: %s", cn, inputColumnSpec.rdfType)
+	}
+	return
+}
+
 // main function for asserting input text row (from csv files)
-func (ri *ReteInputContext) assertInputTextRecord(reteSession *bridge.ReteSession, inBundleRow *bundleRow, writeOutputc *map[string][]chan []interface{}) error {
+func (ri *ReteInputContext) assertInputTextRecord(reteSession *bridge.ReteSession, aJetRow *jetRow, writeOutputc *map[string][]chan []interface{}) error {
 	// Each row in inputRecords is a jets:Entity, with it's own jets:key
-	ncol := len(inBundleRow.inputRows)
+	ncol := len(aJetRow.rowData)
 	row := make([]sql.NullString, ncol)
 	for i := range row {
-		row[i] = *inBundleRow.inputRows[i].(*sql.NullString)
+		row[i] = *aJetRow.rowData[i].(*sql.NullString)
 	}
 	var jetsKeyStr string
-	if row[inBundleRow.processInput.keyPosition].Valid {
-		jetsKeyStr = row[inBundleRow.processInput.keyPosition].String
+	if row[aJetRow.processInput.keyPosition].Valid {
+		jetsKeyStr = row[aJetRow.processInput.keyPosition].String
 	} else {
 		jetsKeyStr = uuid.New().String()
 	}
@@ -93,11 +165,11 @@ func (ri *ReteInputContext) assertInputTextRecord(reteSession *bridge.ReteSessio
 	if err != nil {
 		return fmt.Errorf("while creating row's jets:key literal (NewTextLiteral): %v", err)
 	}
-	if subject == nil || ri.rdf__type == nil || inBundleRow.processInput.entityRdfTypeResource == nil {
+	if subject == nil || ri.rdf__type == nil || aJetRow.processInput.entityRdfTypeResource == nil {
 		return fmt.Errorf("ERROR while asserting row rdf type")
 	}
 	// Assert the rdf:type of the row
-	_, err = reteSession.Insert(subject, ri.rdf__type, inBundleRow.processInput.entityRdfTypeResource)
+	_, err = reteSession.Insert(subject, ri.rdf__type, aJetRow.processInput.entityRdfTypeResource)
 	if err != nil {
 		return fmt.Errorf("while asserting row rdf type: %v", err)
 	}
@@ -109,7 +181,7 @@ func (ri *ReteInputContext) assertInputTextRecord(reteSession *bridge.ReteSessio
 	// Assert domain columns of the row
 	for icol := 0; icol < ncol; icol++ {
 		// asserting input row with mapping spec
-		inputColumnSpec := &inBundleRow.processInput.processInputMapping[icol]
+		inputColumnSpec := &aJetRow.processInput.processInputMapping[icol]
 		// fmt.Println("** assert from table:",inputColumnSpec.tableName,", property:",inputColumnSpec.dataProperty,", value:",row[icol].String)
 		var obj string
 		var err error
@@ -229,7 +301,6 @@ func (ri *ReteInputContext) assertInputTextRecord(reteSession *bridge.ReteSessio
 				default:
 					return fmt.Errorf("ERROR unknown mapping function: %s", inputColumnSpec.functionName.String)
 				}
-
 			} else {
 				obj = row[icol].String
 			}
@@ -244,11 +315,11 @@ func (ri *ReteInputContext) assertInputTextRecord(reteSession *bridge.ReteSessio
 					// report error
 					var br BadRow
 					br.RowJetsKey = sql.NullString{String: jetsKeyStr, Valid: true}
-					if row[inBundleRow.processInput.groupingPosition].Valid {
-						br.GroupingKey = sql.NullString{String: row[inBundleRow.processInput.groupingPosition].String, Valid: true}
+					if row[aJetRow.processInput.groupingPosition].Valid {
+						br.GroupingKey = sql.NullString{String: row[aJetRow.processInput.groupingPosition].String, Valid: true}
 					}
 					if inputColumnSpec.inputColumn.Valid {
-						br.InputColumn = sql.NullString{String: inputColumnSpec.inputColumn.String, Valid: true}
+						br.InputColumn = inputColumnSpec.inputColumn
 					} else {
 						br.InputColumn = sql.NullString{String: "UNNAMED", Valid: true}
 					}
@@ -257,97 +328,37 @@ func (ri *ReteInputContext) assertInputTextRecord(reteSession *bridge.ReteSessio
 					} else {
 						br.ErrorMessage = inputColumnSpec.errorMessage
 					}
-					log.Println("BAD Input ROW:", br)
+					log.Println("Error when mapping input value:", br)
 					br.write2Chan((*writeOutputc)["jetsapi.process_errors"][0])
 				}
 				continue
 			}
 		}
 		// cast obj to type
-		// switch inputColumn.DataType {
-		var object *bridge.Resource
-		switch inputColumnSpec.rdfType {
-		// case "null":
-		// 	object, err = ri.rw.js.NewNull()
-		case "resource":
-			object, err = reteSession.NewResource(obj)
-		case "int":
-			var v int
-			v, err = strconv.Atoi(obj)
-			if err == nil {
-				object, err = reteSession.NewIntLiteral(v)
-			}
-		case "bool":
-			v := 0
-			if len(obj) > 0 {
-				c := strings.ToLower(obj[0:1])
-				switch c {
-				case "t", "1", "y":
-					v = 1
-				case "f", "0", "n":
-					v = 0
-				default:
-					err = fmt.Errorf("object is not boolean: %s", obj)
-				}
-			}
-			if err == nil {
-				object, err = reteSession.NewIntLiteral(v)
-			}
-		case "uint":
-			var v uint64
-			v, err = strconv.ParseUint(obj, 10, 32)
-			if err == nil {
-				object, err = reteSession.NewUIntLiteral(uint(v))
-			}
-		case "long":
-			var v int64
-			v, err = strconv.ParseInt(obj, 10, 64)
-			if err == nil {
-				object, err = reteSession.NewLongLiteral(v)
-			}
-		case "ulong":
-			var v uint64
-			v, err = strconv.ParseUint(obj, 10, 64)
-			if err != nil {
-				return fmt.Errorf("while mapping input value: %v", err)
-			}
-			object, err = reteSession.NewULongLiteral(v)
-		case "double":
-			var v float64
-			v, err = strconv.ParseFloat(obj, 64)
-			if err == nil {
-				object, err = reteSession.NewDoubleLiteral(v)
-			}
-		case "text":
-			object, err = reteSession.NewTextLiteral(obj)
-		case "date":
-			object, err = reteSession.NewDateLiteral(obj)
-		case "datetime":
-			object, err = reteSession.NewDatetimeLiteral(obj)
-		default:
-			var cn string
-			if inputColumnSpec.inputColumn.Valid {
-				cn = inputColumnSpec.inputColumn.String
-			} else {
-				cn = "UNNAMED"
-			}
-			err = fmt.Errorf("ERROR unknown or invalid type for column %s: %s", cn, inputColumnSpec.rdfType)
-		}
+		object, err := castToRdfType(&obj, inputColumnSpec, reteSession)
 		if err != nil {
-			var br BadRow
-			br.RowJetsKey = sql.NullString{String: jetsKeyStr, Valid: true}
-			if row[inBundleRow.processInput.groupingPosition].Valid {
-				br.GroupingKey = sql.NullString{String: row[inBundleRow.processInput.groupingPosition].String, Valid: true}
+			// Error casting obj value to colum type
+			if inputColumnSpec.defaultValue.Valid {
+				obj = inputColumnSpec.defaultValue.String
+				object, err = castToRdfType(&obj, inputColumnSpec, reteSession)
 			}
-			if inputColumnSpec.inputColumn.Valid {
-				br.InputColumn = sql.NullString{String: inputColumnSpec.inputColumn.String, Valid: true}
-			} else {
-				br.InputColumn = sql.NullString{String: "UNNAMED", Valid: true}
+			// Check if casting the default value failed or default value is not valid
+			if err != nil {
+				var br BadRow
+				br.RowJetsKey = sql.NullString{String: jetsKeyStr, Valid: true}
+				if row[aJetRow.processInput.groupingPosition].Valid {
+					br.GroupingKey = inputColumnSpec.inputColumn
+				}
+				if inputColumnSpec.inputColumn.Valid {
+					br.InputColumn = inputColumnSpec.inputColumn
+				} else {
+					br.InputColumn = sql.NullString{String: "UNNAMED", Valid: true}
+				}
+				br.ErrorMessage = sql.NullString{String: fmt.Sprintf("while converting input value to column type: %v", err), Valid: true}
+				log.Println("Error while casting object value to column type:", br)
+				br.write2Chan((*writeOutputc)["jetsapi.process_errors"][0])
+				continue
 			}
-			br.ErrorMessage = sql.NullString{String: fmt.Sprintf("while converting input value to column type: %v", err), Valid: true}
-			log.Println("BAD Input ROW:", br)
-			br.write2Chan((*writeOutputc)["jetsapi.process_errors"][0])
-			continue
 		}
 		if inputColumnSpec.predicate == nil {
 			return fmt.Errorf("ERROR predicate is null")

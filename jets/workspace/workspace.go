@@ -65,7 +65,7 @@ type JetStoreProperties map[string]string
 type OutputTableSpecs map[string]*DomainTable
 
 func OpenWorkspaceDb(dsn string) (*WorkspaceDb, error) {
-	log.Println("Opening workspace database...")
+	fmt.Println("-- Opening workspace database...")
 	db, err := sql.Open("sqlite3", dsn) // Open the created SQLite File
 	if err != nil {
 		return nil, fmt.Errorf("while opening workspace db: %v", err)
@@ -98,16 +98,22 @@ func (workspaceDb *WorkspaceDb) GetTableNames() ([]string, error) {
 
 // GetRangeDataType: Get the data type for the range of the dataProperty arg
 func (workspaceDb *WorkspaceDb) GetRangeDataType(dataProperty string) (string, bool, error) {
-	if strings.HasPrefix(dataProperty, "_0:") {
+	switch {
+	case strings.HasPrefix(dataProperty, "_0:"):
 		return "text", true, nil
+
+	case dataProperty == "jets:source_period_sequence":
+		return "int", false, nil
+
+	default:
+		var dataType string
+		var asArray bool
+		err := workspaceDb.db.QueryRow("SELECT type, as_array FROM data_properties WHERE name = ?", dataProperty).Scan(&dataType, &asArray)
+		if err != nil {
+			return dataType, asArray, fmt.Errorf("while looking up range data type for data_property %s: %v", dataProperty, err)
+		}
+		return dataType, asArray, nil
 	}
-	var dataType string
-	var asArray bool
-	err := workspaceDb.db.QueryRow("SELECT type, as_array FROM data_properties WHERE name = ?", dataProperty).Scan(&dataType, &asArray)
-	if err != nil {
-		return dataType, asArray, fmt.Errorf("while looking up range data type for data_property %s: %v", dataProperty, err)
-	}
-	return dataType, asArray, nil
 }
 
 // GetRuleSetNames: Get the slice of ruleset name for ruleseq (rule sequence) name
@@ -168,7 +174,7 @@ func (workspaceDb *WorkspaceDb) LoadDomainTableDefinitions(allTbl bool, outTable
 
 		// read the domain table column info
 		if allTbl || outTableFilter[tableName] {
-			log.Println("Reading table", tableName, "info...")
+			fmt.Println("-- Reading table", tableName, "info...")
 			domainColumnsRow, err := workspaceDb.db.Query(
 				"SELECT dc.name, dp.name, dc.type, dc.as_array, dc.is_grouping FROM domain_columns dc OUTER LEFT JOIN data_properties dp ON dc.data_property_key = dp.key WHERE domain_table_key = ?", tableKey)
 			if err != nil {
@@ -183,7 +189,7 @@ func (workspaceDb *WorkspaceDb) LoadDomainTableDefinitions(allTbl bool, outTable
 				var domainColumn DomainColumn
 				domainColumnsRow.Scan(&domainColumn.ColumnName, &domainColumn.PropertyName, &domainColumn.DataType, &domainColumn.IsArray, &domainColumn.IsGrouping)
 				// // for devel
-				// log.Println("  - Column:", domainColumn.ColumnName, ", (property", domainColumn.PropertyName, "), is_array?", domainColumn.IsArray, ", is_grouping?", domainColumn.IsGrouping)
+				// fmt.Println("--   - Column:", domainColumn.ColumnName, ", (property", domainColumn.PropertyName, "), is_array?", domainColumn.IsArray, ", is_grouping?", domainColumn.IsGrouping)
 				domainTable.Columns = append(domainTable.Columns, domainColumn)
 			}
 

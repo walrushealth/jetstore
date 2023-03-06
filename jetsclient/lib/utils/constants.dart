@@ -41,6 +41,7 @@ class ScreenKeys {
   static const clientAdmin = "clientAdminScreen";
   static const sourceConfig = "sourceConfigScreen";
   static const domainTableViewer = "domainTableViewerScreen";
+  static const inputSourceMapping = "inputSourceMappingScreen";
   static const processInput = "processInputScreen";
   static const processConfig = "processConfigScreen";
   static const pipelineConfig = "pipelineConfigScreen";
@@ -66,11 +67,14 @@ class FormKeys {
   // File Staging Area
   static const sourceConfig = "sourceConfigForm";
   static const addSourceConfig = "addSourceConfigDialog";
+  static const loadRawRows = "loadRawRowsDialog";
   static const loadFile = "loadFileDialog";
+  // Input Source Mapping Forms
+  static const inputSourceMapping = "inputSourceMapping";
+  static const processMapping = "processMappingDialog";
   // Process Input Forms
   static const processInput = "processInputForm";
   static const addProcessInput = "addProcessInputDialog";
-  static const processMapping = "processMappingDialog";
   // Process Config Forms
   static const processConfig = "processConfigForm";
   static const rulesConfig = "rulesConfigDialog";
@@ -111,8 +115,10 @@ class FSK {
   static const objectType = "object_type";
   static const sourceType = "source_type";
   static const domainKeysJson = "domain_keys_json";
+  static const codeValuesMappingJson = "code_values_mapping_json";
   static const entityRdfType = "entity_rdf_type";
   static const status = "status";
+  static const rawRows = "raw_rows";
 
   // keys used for mapping
   // key for domain classes data properties
@@ -142,6 +148,7 @@ class FSK {
   static const mergedProcessInputKeys = "merged_process_input_keys";
   static const mainObjectType = "main_object_type";
   static const mainSourceType = "main_source_type";
+  static const sourcePeriodType = "source_period_type";
   static const automated = "automated";
 
   // Pipeline Exec keys
@@ -201,13 +208,13 @@ class ActionKeys {
   static const dialogCancel = "dialog.cancelAction";
   static const toggleUserActive = "toggleUserActive";
   static const deleteUser = "deleteUser";
-  
+
   // for Client & Org Admin dialog
   static const clientOk = "client.ok";
   static const orgOk = "org.ok";
   static const deleteClient = "deleteClientAction";
   static const deleteOrg = "deleteOrgAction";
-  
+
   // for Source Config dialog
   static const addSourceConfigOk = "addSourceConfig.ok";
 
@@ -222,6 +229,7 @@ class ActionKeys {
   // for process mapping dialog
   static const mapperOk = "mapper.ok";
   static const mapperDraft = "mapper.draft";
+  static const loadRawRowsOk = "loadRawRows.Ok";
 
   // for process and rules config dialog
   static const ruleConfigOk = "ruleConfig.ok";
@@ -258,7 +266,7 @@ class DTKeys {
   // Client & Organization Admin DT
   static const clientAdminTable = "clientAdminTable";
   static const orgNameTable = "orgNameTable";
-  
+
   // File Staging Area / Source Config DT
   static const sourceConfigTable = "sourceConfigTable";
   static const fileKeyStagingTable = "fileKeyStagingTable";
@@ -266,19 +274,21 @@ class DTKeys {
   // Domain Table Viewer DT
   static const inputTable = "inputTable";
 
-  // Process Input & Mapping DT
+  // Input Source Mapping DT
+  static const inputSourceMapping = "inputSourceMapping";
+
+  // Process Input Configuration DT
   static const processInputTable = "processInputTable";
   static const processMappingTable = "processMappingTable";
 
-  // Process and Rules Config DT
-  static const processNameTable = "processNameTable";
-  static const clientsNameTable = "clientsNameTable";
-  static const processConfigTable = "processConfigTable";
+  // Rules Config DT
   static const ruleConfigTable = "ruleConfigTable";
+  static const clientsAndProcessesTableView = "clientsAndProcessesTableView";
 
   // Pipeline Config DT
   static const pipelineConfigTable = "pipelineConfigTable";
-  static const fileKeyStagingForPipelineMainProcessInput = "fileKeyStagingForPipelineMainProcessInput";
+  static const fileKeyStagingForPipelineMainProcessInput =
+      "fileKeyStagingForPipelineMainProcessInput";
   // static const fileKeyStagingForPipelineMergeProcessInput = "fileKeyStagingForPipelineMergeProcessInput";
 
   // User administration

@@ -4,6 +4,7 @@ import (
 	// "bufio"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -96,6 +97,15 @@ func (br BadRow) write2Chan(ch chan<- []interface{}) {
 	ch <- brout
 }
 
+// codeValueMapping structure:
+// 	{
+// 		"acme:patientGender": {
+// 			"0": "M",
+// 			"1": "F"
+// 		}
+// 	}
+// Where acme:patientGender is the domain property, "0" and "1" are the client-specific codes
+// and "M", "F" are the canonical codes to use for the domain property
 type ProcessInput struct {
 	key                   int
 	client                string
@@ -113,6 +123,7 @@ type ProcessInput struct {
 	keyPosition           int
 	processInputMapping   []ProcessMap
 	sessionId             string
+	codeValueMapping      *map[string]map[string]string
 }
 
 type ProcessMap struct {
@@ -138,69 +149,71 @@ type RuleConfig struct {
 }
 
 // utility methods
-// Statement to get the session_ids from input_registry and source_period tables:
-func (pi *ProcessInput) makeLookupSessionIdStmt(sourcePeriodType string, currentSourcePeriod int) string {
-	startPeriod := currentSourcePeriod - pi.lookbackPeriods
-	endPeriod := currentSourcePeriod
-	return fmt.Sprintf(`
-			SELECT
-				ir.session_id
-			FROM
-				jetsapi.input_registry ir,
-				jetsapi.source_period sp
-			WHERE
-				ir.source_period_key = sp.key
-				AND ir.client = '%s'
-				AND ir.org = '%s'
-				AND ir.object_type = '%s'
-				AND ir.source_type = '%s'
-				AND sp."%s" >= %d
-				AND sp."%s" <= %d`, pi.client, pi.organization, pi.objectType, pi.sourceType,
-				sourcePeriodType, startPeriod, sourcePeriodType, endPeriod)
-}
-
-// prepare the sql statement for reading from staging table (csv)
+// prepare the sql statement for reading from staging table or domain table (csv)
+// Query with lookback period = 0:
+// -------------------------------
 // "SELECT  {{column_names}}
 //  FROM {{processInput.tableName}}
 //  WHERE session_id={{processInput.sessionId}} 
 //    AND {{main_object_type.shardIdColumn}}={{*shardId}}
-//  ORDER BY {{processInput.groupingColumn}})
+//  ORDER BY {{processInput.groupingColumn}} ASC
 //
-// Statement to get the session_ids from input_registry and source_period tables:
-// SELECT
-// 	ir.session_id
-// FROM
-// 	jetsapi.input_registry ir,
-// 	jetsapi.source_period sp
-// WHERE
-// 	ir.source_period_key = sp.key
-// 	AND ir.client = $1
-// 	AND ir.org = $2
-// 	AND ir.object_type = $3
-// 	AND ir.source_type = $4
-// 	AND sp.{{pipeline_config.source_period_type}} >= $5 (current - lookback_periods)
-// 	AND sp.{{pipeline_config.source_period_type}} <= $6 (current)
-func (pipelineConfig *PipelineConfig) makeMainProcessInputSqlStmt() string {
-	processInput := pipelineConfig.mainProcessInput
+// Query with lookback period > 0:
+// -------------------------------
+// -- with $5 = (current - lookback_periods)
+// -- with $6 = (current)
+// -- where sr.month_period is an example evaluation of sr.{{pipeline_config.source_period_type}}
+// SELECT  e.{{column_names}}, ($6 - sr.month_period) as "jets:source_period_sequence"
+// FROM "Acme_Eligibility" e, jetsapi.session_registry sr
+// WHERE e.session_id = sr.session_id
+// 	AND sr.month_period >= $5
+// 	AND sr.{{pipeline_config.source_period_type}} <= $6
+// 	AND e."Eligibility:shard_id"=0
+// ORDER BY e."Eligibility:domain_key" ASC
+//
+func (pipelineConfig *PipelineConfig) makeProcessInputSqlStmt(processInput *ProcessInput) string {
+	sourcePeriodType := pipelineConfig.sourcePeriodType
+	currentSourcePeriod := pipelineConfig.currentSourcePeriod
+	lookbackPeriods := processInput.lookbackPeriods
+	lowerEndPeriod := currentSourcePeriod - lookbackPeriods
 	var buf strings.Builder
 	buf.WriteString("SELECT ")
 	for i, spec := range processInput.processInputMapping {
 		if i > 0 {
 			buf.WriteString(", ")
 		}
-		if spec.inputColumn.Valid {
+		switch {
+		case spec.inputColumn.Valid:
+  		buf.WriteString("e.")	
   		buf.WriteString(pgx.Identifier{spec.inputColumn.String}.Sanitize())	
-		} else {
+
+		case spec.dataProperty == "jets:source_period_sequence":
+			if lookbackPeriods > 0 {
+				buf.WriteString(fmt.Sprintf(`(%d - sr."%s") as "jets:source_period_sequence"`, 
+					currentSourcePeriod, sourcePeriodType))
+			} else {
+				buf.WriteString(`0 as "jets:source_period_sequence"`)
+			}
+
+		default:
 			buf.WriteString(fmt.Sprintf("NULL as UNNAMMED%d", i))
 		}
 	}
 	buf.WriteString(" FROM ")
 	buf.WriteString(pgx.Identifier{processInput.tableName}.Sanitize())
-	if processInput.lookbackPeriods > 0 {
-		buf.WriteString(fmt.Sprintf(" WHERE session_id IN (%s)",processInput.makeLookupSessionIdStmt(
-			pipelineConfig.sourcePeriodType, pipelineConfig.currentSourcePeriod)))	
+	buf.WriteString(" e")
+	if lookbackPeriods > 0 {
+		buf.WriteString(", jetsapi.session_registry sr ")
+	}
+	buf.WriteString(" WHERE ")
+	if lookbackPeriods > 0 {
+		buf.WriteString(" e.session_id = sr.session_id ")
+		buf.WriteString(" AND ")
+		buf.WriteString(fmt.Sprintf(`sr."%s" >= %d`, sourcePeriodType, lowerEndPeriod))
+		buf.WriteString(" AND ")
+		buf.WriteString(fmt.Sprintf(`sr."%s" <= %d`, sourcePeriodType, currentSourcePeriod))
 	} else {
-		buf.WriteString(fmt.Sprintf(" WHERE session_id = '%s'",processInput.sessionId))	
+		buf.WriteString(fmt.Sprintf(" e.session_id = '%s'",processInput.sessionId))	
 	}
 	if *shardId >= 0 {
 		buf.WriteString(" AND ")
@@ -219,53 +232,21 @@ func (pipelineConfig *PipelineConfig) makeMainProcessInputSqlStmt() string {
 	return buf.String()
 }
 
-// Generate query for merged-in table
-// Example from test2 of server unit tests:
-//  case join using Member:domain_key as grouping column:
-//     SELECT "hc:member_number", session_id, "hc:claim_number", "jets:key", "rdf:type"
-//     FROM "hc:ProfessionalClaim"
-//     WHERE session_id={{processInput.sessionId}} 
-//       AND "Member:shard_id" = {{*shardId}}
-//     ORDER BY "Member:domain_key" ASC
-//
-func (pipelineConfig *PipelineConfig) makeMergeProcessInputSqlStmt(mergeIndex int) string {
-	processInput := pipelineConfig.mergedProcessInput[mergeIndex]
-	var buf strings.Builder
-	groupingColumn := pgx.Identifier{processInput.groupingColumn}.Sanitize()
-	buf.WriteString("SELECT ")
-	for i, spec := range processInput.processInputMapping {
-		if i > 0 {
-			buf.WriteString(", ")
-		}
-		if(spec.inputColumn.Valid) {
-			buf.WriteString(pgx.Identifier{spec.inputColumn.String}.Sanitize())	
-		} else {
-			buf.WriteString(fmt.Sprintf("NULL as UNNAMMED%d", i))
-		}
+// Map client-specific code value to canonical code value
+func (processInput *ProcessInput) mapCodeValue(clientValue *string, inputColumnSpec *ProcessMap) *string {
+	var canonicalValue string
+	if processInput.codeValueMapping == nil {
+		return clientValue
 	}
-	buf.WriteString(" FROM ")
-	buf.WriteString(pgx.Identifier{processInput.tableName}.Sanitize())
-	if processInput.lookbackPeriods > 0 {
-		buf.WriteString(fmt.Sprintf(" WHERE session_id IN (%s)",processInput.makeLookupSessionIdStmt(
-			pipelineConfig.sourcePeriodType, pipelineConfig.currentSourcePeriod)))	
-	} else {
-		buf.WriteString(fmt.Sprintf(" WHERE session_id = '%s'",processInput.sessionId))	
+	codeValueMap, ok := (*processInput.codeValueMapping)[inputColumnSpec.dataProperty]
+	if !ok {
+		return clientValue
 	}
-	if *shardId >= 0 {
-		buf.WriteString(" AND ")
-		buf.WriteString(pgx.Identifier{processInput.shardIdColumn}.Sanitize())
-		buf.WriteString(" = ")
-		buf.WriteString(strconv.Itoa(*shardId))
+	canonicalValue, ok = codeValueMap[*clientValue]
+	if !ok {
+		return clientValue
 	}
-	buf.WriteString(" ORDER BY ")
-	buf.WriteString(groupingColumn)
-	buf.WriteString(" ASC ")
-	if *limit > 0 {
-		buf.WriteString(" LIMIT ")
-		buf.WriteString(strconv.Itoa(*limit))
-	}
-
-	return buf.String()
+	return &canonicalValue
 }
 
 // sets the grouping position
@@ -293,7 +274,7 @@ func (processInput *ProcessInput) setKeyPos() error {
 // Main Pipeline Configuration Read Function
 // -----------------------------------------
 func readPipelineConfig(dbpool *pgxpool.Pool, pcKey int, peKey int) (*PipelineConfig, error) {
-	pc := PipelineConfig{key: pcKey, sourcePeriodType: "month"}
+	pc := PipelineConfig{key: pcKey}
 	var err error
 	var outSessId sql.NullString
 	mainInputRegistryKey := sql.NullInt64{}
@@ -454,17 +435,27 @@ func (pi *ProcessInput) loadProcessInput(dbpool *pgxpool.Pool) error {
 	} else {
 		pi.keyColumn = "jets:key"
 	}
+
 	// read the mapping definitions
 	pi.processInputMapping, err = readProcessInputMapping(dbpool, pi.key)
 	if err != nil {
 		return fmt.Errorf("while calling readProcessInputMapping: %v", err)
 	}
+
 	// Get the object_type associated with the input table
 	// The object_type are in the DomainKeysJson from source_config table
 	var dkJson sql.NullString
-	err = dbpool.QueryRow(context.Background(), 
+	if pi.sourceType == "file" {
+		err = dbpool.QueryRow(context.Background(), 
 		"SELECT domain_keys_json FROM jetsapi.source_config WHERE table_name=$1", 
 		pi.tableName).Scan(&dkJson)
+	} else {
+		err = dbpool.QueryRow(context.Background(), 
+		"SELECT domain_keys_json FROM jetsapi.domain_keys_registry WHERE entity_rdf_type=$1", 
+		pi.entityRdfType).Scan(&dkJson)
+	}
+	//* TODO Add case when no domain key info is provided, use jets:key as the domain_key
+	// right now we err out if no domain key info is provided (although the field can be nullable)
 	if err != nil || !dkJson.Valid {
 		return fmt.Errorf("could not load domain_keys_json from jetsapi.source_config for table %s: %v", pi.tableName, err)
 	}
@@ -491,6 +482,36 @@ func (pi *ProcessInput) loadProcessInput(dbpool *pgxpool.Pool) error {
 			dataProperty: colName,
 			rdfType: "int",
 		})
+	}
+
+	// Add processInputMapping for jets:source_period_key
+	// jets:source_period_key is added automatically by the main and merged-in queries
+	// as the last column in the input bundle
+	pi.processInputMapping = append(pi.processInputMapping, ProcessMap{
+		tableName: pi.tableName,
+		isDomainKey: false,
+		inputColumn: sql.NullString{},
+		dataProperty: "jets:source_period_sequence",
+		rdfType: "int",
+	})
+
+	// Load the client-specific code value mapping to canonical values
+	if pi.sourceType == "file" {
+		var code_values_mapping_json sql.NullString
+		err = dbpool.QueryRow(context.Background(), 
+		"SELECT code_values_mapping_json FROM jetsapi.source_config WHERE table_name=$1", 
+		pi.tableName).Scan(&code_values_mapping_json)
+		if err != nil && err.Error() != "no rows in result set" {
+			return fmt.Errorf("loadProcessInput: Could not get the code_values_mapping_json from source_config table:%v", err)
+		}
+		if code_values_mapping_json.Valid {
+			codeValueMapping := make(map[string]map[string]string)
+			err := json.Unmarshal([]byte(code_values_mapping_json.String), &codeValueMapping)
+			if err != nil {
+				return fmt.Errorf("loadProcessInput: Could not parse the code_values_mapping_json from source_config table as json:%v", err)
+			}
+			pi.codeValueMapping = &codeValueMapping
+		}
 	}
 	return nil
 }

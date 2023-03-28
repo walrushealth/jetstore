@@ -1,6 +1,7 @@
 package datatable
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -256,8 +257,22 @@ func (ctx *Context) ExecRawQueryMap(dataTableAction *DataTableAction) (results *
 	return
 }
 
-type chartype rune
-func DetectDelimiter(buf []byte) (sep_flag chartype, err error) {
+type Chartype rune
+// Single character type for csv options
+func (s *Chartype) String() string {
+	return fmt.Sprintf("%#U", *s)
+}
+
+func (s *Chartype) Set(value string) error {
+	r := []rune(value)
+	if len(r) > 1 || r[0] == '\n' {
+		return errors.New("sep must be a single char not '\\n'")
+	}
+	*s = Chartype(r[0])
+	return nil
+}
+
+func DetectDelimiter(buf []byte) (sep_flag Chartype, err error) {
 	// auto detect the separator based on the first line
 	nb := len(buf)
 	if nb > 2048 {
@@ -267,13 +282,16 @@ func DetectDelimiter(buf []byte) (sep_flag chartype, err error) {
 	cn := strings.Count(txt, ",")
 	pn := strings.Count(txt, "|")
 	tn := strings.Count(txt, "\t")
+	td := strings.Count(txt, "~")
 	switch {
-	case (cn > pn) && (cn > tn):
+	case (cn > pn) && (cn > tn) && (cn > td):
 		sep_flag = ','
-	case (pn > cn) && (pn > tn):
+	case (pn > cn) && (pn > tn) && (pn > td):
 		sep_flag = '|'
-	case (tn > cn) && (tn > pn):
+	case (tn > cn) && (tn > pn) && (tn > td):
 		sep_flag = '\t'
+	case (td > cn) && (td > pn) && (td > tn):
+		sep_flag = '~'
 	default:
 		return 0, fmt.Errorf("error: cannot determine the csv-delimit used in buf")
 	}
@@ -313,7 +331,7 @@ func (ctx *Context) InsertRawRows(dataTableAction *DataTableAction, token string
 			return
 		}
 		// byteBuf as the raw_rows
-		var sepFlag chartype
+		var sepFlag Chartype
 		sepFlag, err = DetectDelimiter(byteBuf)
 		if err != nil {
 			log.Printf("Error while detecting delimiters for raw_rows: %v",err)
@@ -797,8 +815,8 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 
 // utility method
 func execQuery(dbpool *pgxpool.Pool, dataTableAction *DataTableAction, query *string) (*[][]interface{}, error) {
-	// *
-	fmt.Println("*** UI Query:", *query)
+	// DEV
+	// fmt.Println("*** UI Query:", *query)
 	resultRows := make([][]interface{}, 0, dataTableAction.Limit)
 	rows, err := dbpool.Query(context.Background(), *query)
 	if err != nil {
@@ -875,6 +893,12 @@ func (ctx *Context) DoReadAction(dataTableAction *DataTableAction) (*map[string]
 
 		dataTableAction.SortColumn = columnsDef[0].Name
 		results["columnDef"] = columnsDef
+		// Add table's label
+		if dataTableAction.FromClauses[0].Schema == "public" {
+			results["label"] = 	fmt.Sprintf("Table %s", dataTableAction.FromClauses[0].Table)
+		} else {
+			results["label"] = 	fmt.Sprintf("Table %s.%s", dataTableAction.FromClauses[0].Schema, dataTableAction.FromClauses[0].Table)
+		}
 	}
 
 	// Get table schema
@@ -940,6 +964,73 @@ func (ctx *Context) DoReadAction(dataTableAction *DataTableAction) (*map[string]
 	}
 
 	results["totalRowCount"] = totalRowCount
+	results["rows"] = resultRows
+	return &results, http.StatusOK, nil
+}
+
+// DoPreviewFileAction ------------------------------------------------------
+func (ctx *Context) DoPreviewFileAction(dataTableAction *DataTableAction) (*map[string]interface{}, int, error) {
+
+	// Validation
+	if len(dataTableAction.WhereClauses) == 0 || 
+		len(dataTableAction.WhereClauses[0].Values) == 0 ||
+		dataTableAction.WhereClauses[0].Column != "file_key" {
+			return nil, http.StatusBadRequest, fmt.Errorf("invalid request, expecting file_key in where clause")
+	}
+	awsBucket := os.Getenv("JETS_BUCKET")
+	awsRegion := os.Getenv("JETS_REGION")
+	if awsBucket == "" || awsRegion == "" {
+		return nil, http.StatusInternalServerError, fmt.Errorf("missing env JETS_BUCKET or JETS_REGION")
+	}
+
+	// to package up the result
+	fileKey := dataTableAction.WhereClauses[0].Values[0]
+	results := map[string]interface{} {
+		"label": fmt.Sprintf("Preview of %s", fileKey),
+	}
+	results["columnDef"] = []DataTableColumnDef{
+		{
+			Name:      "line",
+			Label:     "Line",
+			IsNumeric: false,
+		},
+	}
+
+	// Download object using a download manager to a temp file (fileHd)
+	fileHd, err := os.CreateTemp("", "jetstore")
+	if err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("failed to open temp input file: %v", err)
+	}
+	fmt.Println("Temp input file name:", fileHd.Name())
+	defer os.Remove(fileHd.Name())
+
+	// Download the object
+	nsz, err := awsi.DownloadFromS3(awsBucket, awsRegion, fileKey, fileHd)
+	if err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("failed to download input file: %v", err)
+	}
+	fmt.Println("downloaded", nsz,"bytes from s3")
+
+	// Read the file
+	fileHd.Seek(0, 0)
+	fileScanner := bufio.NewScanner(fileHd)
+	resultRows := make([][]interface{}, 0, dataTableAction.Limit)
+	nbrLines := 0
+
+	fileScanner.Split(bufio.ScanLines)
+
+	done := false
+	for !done && fileScanner.Scan() {
+		row := []interface{} {
+			fileScanner.Text(),
+		}
+		resultRows = append(resultRows, row)
+		nbrLines += 1
+		if nbrLines == dataTableAction.Limit {
+			done = true
+		}
+	}
+	results["totalRowCount"] = nbrLines
 	results["rows"] = resultRows
 	return &results, http.StatusOK, nil
 }

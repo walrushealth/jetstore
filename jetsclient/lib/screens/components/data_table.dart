@@ -59,7 +59,7 @@ class JetsDataTableWidget extends FormField<WidgetField> {
                 .where((e) => !e.isHidden)
                 .map((e) => state.makeDataColumn(e))
                 .toList();
-            var footerWidgets = <Widget>[
+            final List<Widget> footerWidgets = tableConfig.noFooter ? [] : [
               Container(
                   // to match trailing padding in case we overflow and end up scrolling
                   width: 14.0),
@@ -196,8 +196,8 @@ class JetsDataTableWidget extends FormField<WidgetField> {
                           ),
                         )),
                         // FOOTER ROW
-                        const SizedBox(height: defaultPadding),
-                        DefaultTextStyle(
+                        if (!tableConfig.noFooter) const SizedBox(height: defaultPadding),
+                        if (!tableConfig.noFooter) DefaultTextStyle(
                           style: footerTextStyle!,
                           child: IconTheme.merge(
                             data: const IconThemeData(
@@ -250,7 +250,7 @@ class JetsDataTableState extends FormFieldState<WidgetField> {
 
   // pagination state
   int currentDataPage = 0;
-  int rowsPerPage = 10;
+  int rowsPerPage = 0;
   late final List<int> availableRowsPerPage;
 
   List<ColumnConfig> columnsConfig = [];
@@ -372,7 +372,7 @@ class JetsDataTableState extends FormFieldState<WidgetField> {
 
   void _refreshTable() {
     currentDataPage = 0;
-    rowsPerPage = 10;
+    rowsPerPage = availableRowsPerPage[0];
     final config = formFieldConfig!;
     formState!.clearSelectedRow(config.group, config.key);
     formState!.setValue(config.group, config.key, null);

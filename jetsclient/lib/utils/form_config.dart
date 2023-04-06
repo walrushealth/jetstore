@@ -1394,6 +1394,10 @@ final Map<String, FormConfig> _formConfigurations = {
             bottomMargin: defaultPadding)
       ],
       [
+        // // Clients filter
+        // FormDataTableFieldConfig(
+        //     key: FSK.client, dataTableConfig: DTKeys.clientTable,flex: 1),
+
         // Pipeline Configuration Table (note using FSK key)
         FormDataTableFieldConfig(
             key: FSK.pipelineConfigKey, dataTableConfig: FSK.pipelineConfigKey),
@@ -1401,14 +1405,14 @@ final Map<String, FormConfig> _formConfigurations = {
       [
         PaddingConfig(),
       ],
-      // [
-      //   // Source period identifying when the file was received
-      //   FormDataTableFieldConfig(
-      //       key: FSK.sourcePeriodKey, dataTableConfig: FSK.sourcePeriodKey),
-      // ],
-      // [
-      //   PaddingConfig(),
-      // ],
+      [
+        // Table to show the main process_input of the selected pipeline above
+        // this is informative to the user
+        FormDataTableFieldConfig(
+            key: DTKeys.mainProcessInputTable, 
+            dataTableConfig: DTKeys.mainProcessInputTable,
+            tableHeight: 225),
+      ],
       [
         FormDataTableFieldConfig(
             key: FSK.mainInputRegistryKey,
@@ -1416,6 +1420,14 @@ final Map<String, FormConfig> _formConfigurations = {
       ],
       [
         PaddingConfig(),
+      ],
+      [
+        // Table to show the merge process_input of the selected pipeline above
+        // this is informative to the user
+        FormDataTableFieldConfig(
+            key: DTKeys.mergeProcessInputTable, 
+            dataTableConfig: DTKeys.mergeProcessInputTable,
+            tableHeight: 250),
       ],
       [
         FormDataTableFieldConfig(

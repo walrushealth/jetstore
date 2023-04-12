@@ -24,6 +24,7 @@ type PipelineConfig struct {
 	clientName             string
 	sourcePeriodType       string
 	sourcePeriodKey        int
+	maxReteSessionSaved    int
 	currentSourcePeriod    int
 	mainProcessInputKey    int
 	mergedProcessInputKeys []int
@@ -43,15 +44,18 @@ type ProcessConfig struct {
 }
 
 type BadRow struct {
-	PEKey        sql.NullInt64
-	GroupingKey  sql.NullString
-	RowJetsKey   sql.NullString
-	InputColumn  sql.NullString
-	ErrorMessage sql.NullString
+	PEKey                 sql.NullInt64
+	GroupingKey           sql.NullString
+	RowJetsKey            sql.NullString
+	InputColumn           sql.NullString
+	ErrorMessage          sql.NullString
+	ReteSessionSaved      string
+	ReteSessionTriples    sql.NullString
 }
 func NewBadRow() BadRow {
 	br := BadRow{
 		PEKey: sql.NullInt64{Int64: int64(*pipelineExecKey), Valid: true},
+		ReteSessionSaved: "N",
 	}
 	return br
 }
@@ -88,13 +92,15 @@ func (br BadRow) String() string {
 	} else {
 		buf.WriteString("NULL")
 	}
+	buf.WriteString(" | ")
+	buf.WriteString(br.ReteSessionSaved)
 	return buf.String()
 }
 
 // wrtie BadRow to ch as slice of interfaces
 func (br BadRow) write2Chan(ch chan<- []interface{}) {
 
-	brout := make([]interface{}, 7) // len of BadRow columns			var sid string
+	brout := make([]interface{}, 9) // len of BadRow columns
 	brout[0] = br.PEKey.Int64
 	if outSessionId != nil && len(*outSessionId) > 0 {
 		brout[1] = *outSessionId
@@ -103,8 +109,10 @@ func (br BadRow) write2Chan(ch chan<- []interface{}) {
 	brout[3] = br.RowJetsKey
 	brout[4] = br.InputColumn
 	brout[5] = br.ErrorMessage
+	brout[6] = br.ReteSessionSaved
+	brout[7] = br.ReteSessionTriples
 	if nodeId != nil {
-		brout[6] = *nodeId
+		brout[8] = *nodeId
 	}
 	ch <- brout
 }
@@ -439,13 +447,17 @@ func getLatestSessionId(dbpool *pgxpool.Pool, tableName string) (sessionId strin
 }
 
 func (pc *PipelineConfig) loadPipelineConfig(dbpool *pgxpool.Pool) error {
+	maxReteSessionsSaved := sql.NullInt64{}
 	err := dbpool.QueryRow(context.Background(),
-		`SELECT client, process_config_key, main_process_input_key, merged_process_input_keys, source_period_type
+		`SELECT client, process_config_key, main_process_input_key, merged_process_input_keys, source_period_type, max_rete_sessions_saved
 		FROM jetsapi.pipeline_config WHERE key = $1`,
 		pc.key).Scan(&pc.clientName, &pc.processConfigKey, &pc.mainProcessInputKey, &pc.mergedProcessInputKeys,
-		&pc.sourcePeriodType)
+		&pc.sourcePeriodType, &maxReteSessionsSaved)
 	if err != nil {
 		return fmt.Errorf("while reading jetsapi.pipeline_config table: %v", err)
+	}
+	if maxReteSessionsSaved.Valid {
+		pc.maxReteSessionSaved = int(maxReteSessionsSaved.Int64)
 	}
 
 	return nil

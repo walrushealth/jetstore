@@ -865,6 +865,12 @@
         "isNotNull": true
       },
       {
+        "columnName": "max_rete_sessions_saved",
+        "dataType": "int",
+        "default": "0",
+        "isNotNull": true
+      },
+      {
         "columnName": "description",
         "dataType": "text"
       },
@@ -1105,6 +1111,14 @@
         "columnName": "error_message",
         "dataType": "text",
         "isNotNull": true
+      },
+      {
+        "columnName": "rete_session_saved",
+        "dataType": "text"
+      },
+      {
+        "columnName": "rete_session_triples",
+        "dataType": "text"
       },
       {
         "columnName": "shard_id",

@@ -1307,6 +1307,16 @@ final Map<String, FormConfig> _formConfigurations = {
                 "SELECT process_name, key FROM jetsapi.process_config ORDER BY process_name ASC LIMIT 100"),
       ],
       [
+        FormInputFieldConfig(
+            key: FSK.maxReteSessionSaved,
+            label: "Max Rete Session Saved",
+            hint: "Max Rete Session Saved per server thread",
+            autofocus: false,
+            obscureText: false,
+            textRestriction: TextRestriction.digitsOnly,
+            maxLength: 3),
+      ],
+      [
         PaddingConfig(height: defaultPadding),
       ],
       [
@@ -1456,6 +1466,7 @@ final Map<String, FormConfig> _formConfigurations = {
   // View Input Records from Process Errors (table as actionless dialog)
   FormKeys.viewInputRecords: FormConfig(
     key: FormKeys.viewInputRecords,
+    title: "Input Records for a Domain Key",
     actions: [
       FormActionConfig(
           key: ActionKeys.dialogCancel,
@@ -1471,6 +1482,40 @@ final Map<String, FormConfig> _formConfigurations = {
             key: DTKeys.inputRecordsFromProcessErrorTable,
             dataTableConfig: DTKeys.inputRecordsFromProcessErrorTable,
             tableHeight: 600)
+      ],
+    ],
+  ),
+
+  // View process_errors.rete_session_triples from Process Errors (table as actionless dialog)
+  FormKeys.viewReteTriples: FormConfig(
+    key: FormKeys.viewReteTriples,
+    title: "Rete Session as Triples",
+    actions: [
+      FormActionConfig(
+          key: ActionKeys.dialogCancel,
+          label: "Close",
+          buttonStyle: ActionStyle.primary,
+          leftMargin: betweenTheButtonsPadding,
+          rightMargin: defaultPadding,
+          bottomMargin: defaultPadding),
+    ],
+    inputFields: [
+      [
+        FormDataTableFieldConfig(
+            key: DTKeys.reteSessionTriplesTable,
+            dataTableConfig: DTKeys.reteSessionTriplesTable,
+            tableHeight: 1000)
+
+        // FormInputFieldConfig(
+        //     key: FSK.reteSessionTriples,
+        //     label: "Rete Triples",
+        //     hint: "Rete session saved as triples",
+        //     flex: 1,
+        //     autofocus: false,
+        //     obscureText: false,
+        //     textRestriction: TextRestriction.none,
+        //     maxLines: 50,
+        //     maxLength: 2097152),
       ],
     ],
   ),

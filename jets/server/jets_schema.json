@@ -1158,6 +1158,16 @@
         "isNotNull": true
       },
       {
+        "columnName": "source_type",
+        "dataType": "text",
+        "isNotNull": true
+      },
+      {
+        "columnName": "client",
+        "dataType": "text",
+        "isNotNull": true
+      },
+      {
         "columnName": "source_period_key",
         "dataType": "int",
         "isNotNull": true
@@ -1185,6 +1195,10 @@
       }
     ],
     "indexes": [
+      {
+        "indexName": "session_registry_source_type_client_idx",
+        "indexDef": "INDEX session_registry_source_type_client_idx ON jetsapi.session_registry (source_type,client)"
+      },
       {
         "indexName": "session_registry_source_period_key_idx",
         "indexDef": "INDEX session_registry_source_period_key_idx ON jetsapi.session_registry (source_period_key ASC)"

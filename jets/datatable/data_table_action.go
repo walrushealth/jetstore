@@ -573,16 +573,30 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 				loaderCommand = append(loaderCommand, "-loaderFailedMetric")
 				loaderCommand = append(loaderCommand, loaderFailedMetric)
 			}
+			var reportName string
+			if clientOrg.(string) != "" {
+				reportName = fmt.Sprintf("loader/client=%s/object_type=%s/org=%s", client.(string), objType.(string), clientOrg.(string))
+			} else {
+				reportName = fmt.Sprintf("loader/client=%s/object_type=%s", client.(string), objType.(string))
+			}
+			runReportsCommand := []string{
+				"-client", client.(string),
+				"-sessionId", sessionId.(string),
+				"-reportName", reportName,
+				"-filePath", strings.Replace(fileKey.(string), os.Getenv("JETS_s3_INPUT_PREFIX"), os.Getenv("JETS_s3_OUTPUT_PREFIX"), 1),
+			}
 			switch {
 			// Call loader synchronously
 			case ctx.DevMode:
 				if ctx.UsingSshTunnel {
 					loaderCommand = append(loaderCommand, "-usingSshTunnel")
+					runReportsCommand = append(runReportsCommand, "-usingSshTunnel")
 				}
+				// Call loader synchronously
 				cmd := exec.Command("/usr/local/bin/loader", loaderCommand...)
-				var b bytes.Buffer
-				cmd.Stdout = &b
-				cmd.Stderr = &b
+				var b1 bytes.Buffer
+				cmd.Stdout = &b1
+				cmd.Stderr = &b1
 				log.Printf("Executing loader command '%v'", loaderCommand)
 				err = cmd.Run()
 				if err != nil {
@@ -590,7 +604,7 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 					log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
 					log.Println("LOADER CAPTURED OUTPUT BEGIN")
 					log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
-					b.WriteTo(os.Stdout)
+					b1.WriteTo(os.Stdout)
 					log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
 					log.Println("LOADER CAPTURED OUTPUT END")
 					log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
@@ -601,17 +615,46 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 				log.Println("============================")
 				log.Println("LOADER CAPTURED OUTPUT BEGIN")
 				log.Println("============================")
-				b.WriteTo(os.Stdout)
+				b1.WriteTo(os.Stdout)
 				log.Println("============================")
 				log.Println("LOADER CAPTURED OUTPUT END")
 				log.Println("============================")
 
+				// Call run_report synchronously
+				cmd = exec.Command("/usr/local/bin/run_reports", runReportsCommand...)
+				var b2 bytes.Buffer
+				cmd.Stdout = &b2
+				cmd.Stderr = &b2
+				log.Printf("Executing run_reports command '%v'", runReportsCommand)
+				err = cmd.Run()
+				if err != nil {
+					log.Printf("while executing run_reports command '%v': %v", runReportsCommand, err)
+					log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+					log.Println("REPORTS CAPTURED OUTPUT BEGIN")
+					log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+					b2.WriteTo(os.Stdout)
+					log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+					log.Println("REPORTS CAPTURED OUTPUT END")
+					log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+					httpStatus = http.StatusInternalServerError
+					err = errors.New("error while running run_reports command")
+					return
+				}
+				log.Println("============================")
+				log.Println("REPORTS CAPTURED OUTPUT BEGIN")
+				log.Println("============================")
+				b2.WriteTo(os.Stdout)
+				log.Println("============================")
+				log.Println("REPORTS CAPTURED OUTPUT END")
+				log.Println("============================")
+
 			default:
 				// StartExecution load file
-				log.Printf("calling StartExecution loaderSM command: %s", loaderCommand)
+				log.Printf("calling StartExecution loaderSM loaderCommand: %s", loaderCommand)
 				name, err = awsi.StartExecution(os.Getenv("JETS_LOADER_SM_ARN"), 
 					map[string]interface{}{
 						"loaderCommand": loaderCommand,
+						"reportsCommand": runReportsCommand,
 					}, sessionId.(string))
 				if err != nil {
 					log.Printf("while calling StartExecution '%v': %v", loaderCommand, err)
@@ -623,6 +666,21 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 			}
 		}
 	case "pipeline_execution_status", "short/pipeline_execution_status":
+		// Need to get:
+		//	- DevMode: run_report_only, run_server_only, run_server_reports
+		//  - State Machine URI: serverSM, or reportsSM
+		// from process_config table
+		// ----------------------------
+		var devModeCode, stateMachineName string
+		stmt := "SELECT devmode_code, state_machine_name FROM jetsapi.process_config WHERE process_name = $1"
+		err = ctx.Dbpool.QueryRow(context.Background(), stmt, dataTableAction.Data[0]["process_name"]).Scan(&devModeCode, &stateMachineName)
+		if err != nil {
+			log.Printf("While getting devModeCode, stateMachineName from process_config: %v", err)
+			httpStatus = http.StatusInternalServerError
+			err = errors.New("error while reading from a table")
+			return
+		}
+
 		// Run the server -- prepare the command line arguments
 		row := make(map[string]interface{}, len(sqlStmt.ColumnKeys))
 		for irow := range dataTableAction.Data {
@@ -667,58 +725,98 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 				err = errors.New("error while preparing argo/server command")
 				return
 			}
+			runReportsCommand := []string{
+				"-processName", processName.(string),
+				"-sessionId", sessionId.(string),
+				"-filePath", strings.Replace(fileKey.(string), os.Getenv("JETS_s3_INPUT_PREFIX"), os.Getenv("JETS_s3_OUTPUT_PREFIX"), 1),
+			}
 			switch {
 			// Call server synchronously
 			case ctx.DevMode:
-				// DevMode: Lock session id & register run on last shard (unless error)
-				// loop over every chard to exec in succession
-				for shardId := 0; shardId < ctx.NbrShards; shardId++ {
-					serverArgs := []string{
-						"-peKey", peKey,
-						"-userEmail", userEmail.(string),
-						"-shardId", strconv.Itoa(shardId),
-						"-nbrShards", strconv.Itoa(ctx.NbrShards),
+				if devModeCode == "run_server_only" || devModeCode == "run_server_reports" {
+					// DevMode: Lock session id & register run on last shard (unless error)
+					// loop over every chard to exec in succession
+					for shardId := 0; shardId < ctx.NbrShards; shardId++ {
+						serverArgs := []string{
+							"-peKey", peKey,
+							"-userEmail", userEmail.(string),
+							"-shardId", strconv.Itoa(shardId),
+							"-nbrShards", strconv.Itoa(ctx.NbrShards),
+						}
+						if serverCompletedMetric != "" {
+							serverArgs = append(serverArgs, "-serverCompletedMetric")
+							serverArgs = append(serverArgs, serverCompletedMetric)
+						}
+						if serverFailedMetric != "" {
+							serverArgs = append(serverArgs, "-serverFailedMetric")
+							serverArgs = append(serverArgs, serverFailedMetric)
+						}
+						if ctx.UsingSshTunnel {
+							serverArgs = append(serverArgs, "-usingSshTunnel")
+						}
+						if shardId < ctx.NbrShards-1 {
+							serverArgs = append(serverArgs, "-doNotLockSessionId")
+						}
+						log.Printf("Run server: %s", serverArgs)
+						cmd := exec.Command("/usr/local/bin/server", serverArgs...)
+						var b bytes.Buffer
+						cmd.Stdout = &b
+						cmd.Stderr = &b
+						log.Printf("Executing server command '%v'", serverArgs)
+						err = cmd.Run()
+						if err != nil {
+							log.Printf("while executing server command '%v': %v", serverArgs, err)
+							log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+							log.Println("SERVER CAPTURED OUTPUT BEGIN")
+							log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+							b.WriteTo(os.Stdout)
+							log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+							log.Println("SERVER CAPTURED OUTPUT END")
+							log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+							httpStatus = http.StatusInternalServerError
+							err = errors.New("error while running server command")
+							return
+						}
+						log.Println("============================")
+						log.Println("SERVER CAPTURED OUTPUT BEGIN")
+						log.Println("============================")
+						b.WriteTo(os.Stdout)
+						log.Println("============================")
+						log.Println("SERVER CAPTURED OUTPUT END")
+						log.Println("============================")
 					}
-					if serverCompletedMetric != "" {
-						serverArgs = append(serverArgs, "-serverCompletedMetric")
-						serverArgs = append(serverArgs, serverCompletedMetric)
-					}
-					if serverFailedMetric != "" {
-						serverArgs = append(serverArgs, "-serverFailedMetric")
-						serverArgs = append(serverArgs, serverFailedMetric)
-					}
+				}
+
+				if devModeCode == "run_reports_only" || devModeCode == "run_server_reports" {
+					// Call run_report synchronously
 					if ctx.UsingSshTunnel {
-						serverArgs = append(serverArgs, "-usingSshTunnel")
+						runReportsCommand = append(runReportsCommand, "-usingSshTunnel")
 					}
-					if shardId < ctx.NbrShards-1 {
-						serverArgs = append(serverArgs, "-doNotLockSessionId")
-					}
-					log.Printf("Run server: %s", serverArgs)
-					cmd := exec.Command("/usr/local/bin/server", serverArgs...)
-					var b bytes.Buffer
-					cmd.Stdout = &b
-					cmd.Stderr = &b
-					log.Printf("Executing server command '%v'", serverArgs)
+					cmd := exec.Command("/usr/local/bin/run_reports", runReportsCommand...)
+					var b2 bytes.Buffer
+					cmd.Stdout = &b2
+					cmd.Stderr = &b2
+					log.Printf("Executing run_reports command '%v'", runReportsCommand)
 					err = cmd.Run()
 					if err != nil {
-						log.Printf("while executing server command '%v': %v", serverArgs, err)
+						log.Printf("while executing run_reports command '%v': %v", runReportsCommand, err)
 						log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
-						log.Println("SERVER CAPTURED OUTPUT BEGIN")
+						log.Println("REPORTS CAPTURED OUTPUT BEGIN")
 						log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
-						b.WriteTo(os.Stdout)
+						b2.WriteTo(os.Stdout)
 						log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
-						log.Println("SERVER CAPTURED OUTPUT END")
+						log.Println("REPORTS CAPTURED OUTPUT END")
 						log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
 						httpStatus = http.StatusInternalServerError
-						err = errors.New("error while running server command")
+						err = errors.New("error while running run_reports command")
 						return
 					}
 					log.Println("============================")
-					log.Println("SERVER CAPTURED OUTPUT BEGIN")
+					log.Println("REPORTS CAPTURED OUTPUT BEGIN")
 					log.Println("============================")
-					b.WriteTo(os.Stdout)
+					b2.WriteTo(os.Stdout)
 					log.Println("============================")
-					log.Println("SERVER CAPTURED OUTPUT END")
+					log.Println("REPORTS CAPTURED OUTPUT END")
 					log.Println("============================")
 				}
 
@@ -746,11 +844,7 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 				}
 				smInput := map[string]interface{}{
 					"serverCommands": serverCommands,
-					"reportsCommand": []string{
-						"-processName", processName.(string),
-						"-sessionId", sessionId.(string),
-						"-filePath", strings.Replace(fileKey.(string), os.Getenv("JETS_s3_INPUT_PREFIX"), os.Getenv("JETS_s3_OUTPUT_PREFIX"), 1),
-					},
+					"reportsCommand": runReportsCommand,
 					"successUpdate": []string{
 						"-peKey", peKey,
 						"-status", "completed",
@@ -760,7 +854,8 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 						"-status", "failed",
 					},
 				}
-				processArn := os.Getenv("JETS_SERVER_SM_ARN")
+				processArn := strings.TrimSuffix(os.Getenv("JETS_SERVER_SM_ARN"), "serverSM")
+				processArn += stateMachineName 
 
 				// StartExecution execute rule
 				log.Printf("calling StartExecution on processArn: %s", processArn)
@@ -772,7 +867,7 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 					err = errors.New("error while calling StartExecution")
 					return
 				}
-				fmt.Println("Loader State Machine", name, "started")
+				fmt.Println("Server State Machine", name, "started")
 			}
 		} // irow := range dataTableAction.Data
 	} // switch dataTableAction.FromClauses[0].Table

@@ -14,6 +14,7 @@ import (
 	"github.com/artisoft-io/jetstore/jets/awsi"
 	"github.com/artisoft-io/jetstore/jets/schema"
 	"github.com/artisoft-io/jetstore/jets/user"
+	"github.com/artisoft-io/jetstore/jets/workspace"
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
@@ -146,10 +147,10 @@ func (server *Server) checkJetStoreDbVersion() error {
 
 		case jetstoreVersion > version:
 			if strings.Contains(os.Getenv("JETS_RESET_DOMAIN_TABLE_ON_STARTUP"), "yes") {
-				log.Println("New JetStore Release deployed, rebuilding all tables and running workspace db init script")
+				log.Println("New JetStore Release deployed, rebuilding all tables")
 				server.ResetDomainTables(&PurgeDataAction{
 					Action: "reset_domain_tables",
-					RunUiDbInitScript: true,
+					RunUiDbInitScript: false,
 					Data: []map[string]interface{}{},
 				})
 				server.addVersionToDb(jetstoreVersion)
@@ -193,6 +194,48 @@ func (server *Server) checkJetStoreDbVersion() error {
 		log.Println("============================")
 
 		server.addVersionToDb(jetstoreVersion)
+	}
+	return nil
+}
+
+// Download overriten workspace files from s3
+// Check the workspace version in db, if jetstore version is more recent, recompile workspace
+func (server *Server) checkWorkspaceVersion() error {
+	// Download overriten workspace files from s3 if any
+	err := workspace.SyncWorkspaceFiles()
+	if err != nil {
+		log.Println("Error while synching workspace file from s3:",err)
+		return err
+	}
+	// Check if need to recompile workspace, skip if in dev mode
+	if os.Getenv("JETSTORE_DEV_MODE") != "" {
+		// We're in dev mode, the user is responsible to compile workspace when needed
+		return nil
+	}
+	var version string
+	jetstoreVersion := os.Getenv("JETS_VERSION")
+	// Check the release in database vs current release
+	stmt := "SELECT MAX(version) FROM jetsapi.workspace_version"
+	err = server.dbpool.QueryRow(context.Background(), stmt).Scan(&version)
+	switch {
+	case err != nil:
+		if err.Error() == "no rows in result set" {
+			log.Println("Workspace version is not defined in workspace_version table, no need to recompile workspace")
+			return nil	
+		}
+		log.Println("Error while reading workspace version from workspace_version table:",err)
+		return err
+
+	case jetstoreVersion > version:
+		// recompile workspace, set the workspace version to be same as jetstore version
+		err = workspace.CompileWorkspace(server.dbpool, jetstoreVersion)
+		if err != nil {
+			log.Println("Error while compiling workspace:",err)
+			return err
+		}
+
+	default:
+		log.Println("JetStore version in database", version, ">=", "workspace version", jetstoreVersion,", no need to recompile workspace")
 	}
 	return nil
 }
@@ -270,10 +313,16 @@ func listenAndServe() error {
 	}
 	defer server.dbpool.Close()
 
-	// Check database version, run update_db if needed
+	// Check jetstore version, run update_db if needed
 	err = server.checkJetStoreDbVersion()
 	if err != nil {
 		return fmt.Errorf("while calling checkJetStoreDbVersion: %v", err)
+	}
+
+	// Check workspace version, compile workspace if needed
+	err = server.checkWorkspaceVersion()
+	if err != nil {
+		return fmt.Errorf("while calling checkWorkspaceVersion: %v", err)
 	}
 
 	// Check that the users table and admin user exists
@@ -306,7 +355,7 @@ func listenAndServe() error {
 	server.Router.Handle("/assets/NOTICES", fs).Methods("GET")
 	server.Router.Handle("/assets/fonts/MaterialIcons-Regular.otf", fs).Methods("GET")
 	server.Router.Handle("/assets/AssetManifest.json", fs).Methods("GET")
-	server.Router.Handle("/assets/AssetManifest.bin", fs).Methods("GET")
+	server.Router.Handle("/assets/AssetManifest.smcbin", fs).Methods("GET")
 	server.Router.Handle("/assets/assets/fonts/RobotoCondensed-Bold.ttf", fs).Methods("GET")
 	server.Router.Handle("/assets/assets/fonts/RobotoCondensed-Italic.ttf", fs).Methods("GET")
 	server.Router.Handle("/assets/assets/fonts/Roboto-Regular.ttf", fs).Methods("GET")

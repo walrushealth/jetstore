@@ -27,7 +27,7 @@ import (
 	constructs "github.com/aws/constructs-go/constructs/v10"
 	jsii "github.com/aws/jsii-runtime-go"
 
-	// awslambdago "github.com/aws/aws-cdk-go/awscdklambdagoalpha/v2"
+	awslambdago "github.com/aws/aws-cdk-go/awscdklambdagoalpha/v2"
 	s3deployment "github.com/aws/aws-cdk-go/awscdk/v2/awss3deployment"
 )
 
@@ -754,6 +754,41 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 		}),
 	})
 	// ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+	// ALTERNATE - Status Update using lambda function
+	// --------------------------------------------------------------------------------------------------------------
+	statusUpdateLambda := awslambdago.NewGoFunction(stack, jsii.String("StatusUpdateLambda"), &awslambdago.GoFunctionProps{
+		Description: jsii.String("Lambda function to register file key with jetstore db"),
+		Runtime: awslambda.Runtime_GO_1_X(),
+		Entry:   jsii.String("lambdas/status_update"),
+		Bundling: &awslambdago.BundlingOptions{
+			GoBuildFlags: &[]*string{jsii.String(`-buildvcs=false -ldflags "-s -w"`)},
+		},
+		Environment: &map[string]*string{
+			"JETS_BUCKET":                        sourceBucket.BucketName(),
+			"JETS_DOMAIN_KEY_HASH_ALGO":          jsii.String(os.Getenv("JETS_DOMAIN_KEY_HASH_ALGO")),
+			"JETS_DOMAIN_KEY_HASH_SEED":          jsii.String(os.Getenv("JETS_DOMAIN_KEY_HASH_SEED")),
+			"JETS_DSN_SECRET":                    rdsSecret.SecretName(),
+			"JETS_INPUT_ROW_JETS_KEY_ALGO":       jsii.String(os.Getenv("JETS_INPUT_ROW_JETS_KEY_ALGO")),
+			"JETS_INVALID_CODE":                  jsii.String(os.Getenv("JETS_INVALID_CODE")),
+			"JETS_LOADER_CHUNCK_SIZE":            jsii.String(os.Getenv("JETS_LOADER_CHUNCK_SIZE")),
+			"JETS_LOADER_SM_ARN":                 jsii.String(loaderSmArn),
+			"JETS_REGION":                        jsii.String(os.Getenv("AWS_REGION")),
+			"JETS_RESET_DOMAIN_TABLE_ON_STARTUP": jsii.String(os.Getenv("JETS_RESET_DOMAIN_TABLE_ON_STARTUP")),
+			"JETS_s3_INPUT_PREFIX":               jsii.String(os.Getenv("JETS_s3_INPUT_PREFIX")),
+			"JETS_s3_OUTPUT_PREFIX":              jsii.String(os.Getenv("JETS_s3_OUTPUT_PREFIX")),
+			"JETS_SERVER_SM_ARN":                 jsii.String(serverSmArn),
+			"SYSTEM_USER":                        jsii.String("admin"),
+		},
+		MemorySize: jsii.Number(128),
+		Timeout:    awscdk.Duration_Millis(jsii.Number(60000)),
+		Vpc: vpc,
+		VpcSubnets: isolatedSubnetSelection,
+	})
+	statusUpdateLambda.Connections().AllowTo(rdsCluster, awsec2.Port_Tcp(jsii.Number(5432)), jsii.String("Allow connection from StatusUpdateLambda"))
+	rdsSecret.GrantRead(statusUpdateLambda, nil)
+	// NOTE following added below due to dependency
+	// statusUpdateLambda.Connections().AllowTo(uiLoadBalancer, awsec2.Port_Tcp(&p), jsii.String("Allow connection from registerKeyLambda"))
+	// adminPwdSecret.GrantRead(statusUpdateLambda, nil)
 
 	// Run Reports ECS Task for reportsSM
 	// --------------------------------------------------------------------------------------------------------------
@@ -800,6 +835,16 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 		IntegrationPattern: sfn.IntegrationPattern_RUN_JOB,
 	})
 	updateReportsSuccessStatusTask.Connections().AllowTo(rdsCluster, awsec2.Port_Tcp(jsii.Number(5432)), jsii.String("Allow connection from updateReportsSuccessStatusTask"))
+	// ALTERNATE using Lambda
+	// Status Update: update_success Step Function Task for reportsSM
+	// --------------------------------------------------------------------------------------------------------------
+	updateReportsSuccessStatusLambdaTask := sfntask.NewLambdaInvoke(stack, jsii.String("UpdateStatusSuccessLambdaTask"), &sfntask.LambdaInvokeProps{
+		Comment: jsii.String("Lambda Task to update status to success"),
+		LambdaFunction: statusUpdateLambda,
+		InputPath: jsii.String("$.successUpdate"),
+		ResultPath: sfn.JsonPath_DISCARD(),
+	})
+	// ALTERNATE ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 	// Status Update: update_error Step Function ECS Task for reportsSM
 	// --------------------------------------------------
@@ -822,8 +867,19 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 		IntegrationPattern: sfn.IntegrationPattern_RUN_JOB,
 	})
 	updateReportsErrorStatusTask.Connections().AllowTo(rdsCluster, awsec2.Port_Tcp(jsii.Number(5432)), jsii.String("Allow connection from  updateReportsErrorStatusTask"))
+	// ALTERNATE using Lambda
+	// Status Update: update_success Step Function Task for reportsSM
+	// --------------------------------------------------------------------------------------------------------------
+	updateReportsErrorStatusLambdaTask := sfntask.NewLambdaInvoke(stack, jsii.String("UpdateReportsErrorStatusLambdaTask"), &sfntask.LambdaInvokeProps{
+		Comment: jsii.String("Lambda Task to update status to error/failed"),
+		LambdaFunction: statusUpdateLambda,
+		InputPath: jsii.String("$.errorUpdate"),
+		ResultPath: sfn.JsonPath_DISCARD(),
+	})
+	// ALTERNATE ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 	
-	runReportsTask.AddCatch(updateReportsErrorStatusTask, mkCatchProps()).Next(updateReportsSuccessStatusTask)
+	// runReportsTask.AddCatch(updateReportsErrorStatusTask, mkCatchProps()).Next(updateReportsSuccessStatusTask)
+	runReportsTask.AddCatch(updateReportsErrorStatusLambdaTask, mkCatchProps()).Next(updateReportsSuccessStatusLambdaTask)
 
 	// Reports State Machine - reportsSM
 	// --------------------------------------------------------------------------------------------------------------
@@ -973,6 +1029,16 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 		IntegrationPattern: sfn.IntegrationPattern_RUN_JOB,
 	})
 	updateServerErrorStatusTask.Connections().AllowTo(rdsCluster, awsec2.Port_Tcp(jsii.Number(5432)), jsii.String("Allow connection from  updateServerErrorStatusTask"))
+	// ALTERNATE using Lambda
+	// Status Update: update_success Step Function Task for reportsSM
+	// --------------------------------------------------------------------------------------------------------------
+	updateServerErrorStatusLambdaTask := sfntask.NewLambdaInvoke(stack, jsii.String("UpdateServerErrorStatusLambdaTask"), &sfntask.LambdaInvokeProps{
+		Comment: jsii.String("Lambda Task to update server status to error/failed"),
+		LambdaFunction: statusUpdateLambda,
+		InputPath: jsii.String("$.errorUpdate"),
+		ResultPath: sfn.JsonPath_DISCARD(),
+	})
+	// ALTERNATE ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 	// Status Update: update_success Step Function Task for serverSM
 	// ----------------------------------------------------
@@ -995,6 +1061,16 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 		IntegrationPattern: sfn.IntegrationPattern_RUN_JOB,
 	})
 	updateServerSuccessStatusTask.Connections().AllowTo(rdsCluster, awsec2.Port_Tcp(jsii.Number(5432)), jsii.String("Allow connection from updateServerSuccessStatusTask"))
+	// ALTERNATE using Lambda
+	// Status Update: update_success Step Function Task for reportsSM
+	// --------------------------------------------------------------------------------------------------------------
+	updateServerSuccessStatusLambdaTask := sfntask.NewLambdaInvoke(stack, jsii.String("UpdateServerSuccessStatusLambdaTask"), &sfntask.LambdaInvokeProps{
+		Comment: jsii.String("Lambda Task to update server status to success"),
+		LambdaFunction: statusUpdateLambda,
+		InputPath: jsii.String("$.successUpdate"),
+		ResultPath: sfn.JsonPath_DISCARD(),
+	})
+	// ALTERNATE ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 	//*TODO SNS message
 	notifyFailure := sfn.NewPass(scope, jsii.String("notify-failure"), &sfn.PassProps{})
@@ -1020,10 +1096,16 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 	})
 
 	// Chaining the SF Tasks
-	runServerMap.Iterator(runServerTask).AddCatch(updateServerErrorStatusTask, mkCatchProps()).Next(runServerReportsTask)
-	runServerReportsTask.AddCatch(updateServerErrorStatusTask, mkCatchProps()).Next(updateServerSuccessStatusTask)
-	updateServerSuccessStatusTask.AddCatch(notifyFailure, mkCatchProps()).Next(notifySuccess)
-	updateServerErrorStatusTask.AddCatch(notifyFailure, mkCatchProps()).Next(notifyFailure)
+	// // Version using ECS Task for Status Update
+	// runServerMap.Iterator(runServerTask).AddCatch(updateServerErrorStatusTask, mkCatchProps()).Next(runServerReportsTask)
+	// runServerReportsTask.AddCatch(updateServerErrorStatusTask, mkCatchProps()).Next(updateServerSuccessStatusTask)
+	// updateServerSuccessStatusTask.AddCatch(notifyFailure, mkCatchProps()).Next(notifySuccess)
+	// updateServerErrorStatusTask.AddCatch(notifyFailure, mkCatchProps()).Next(notifyFailure)
+	// Version using Lambda for Status Update
+	runServerMap.Iterator(runServerTask).AddCatch(updateServerErrorStatusLambdaTask, mkCatchProps()).Next(runServerReportsTask)
+	runServerReportsTask.AddCatch(updateServerErrorStatusLambdaTask, mkCatchProps()).Next(updateServerSuccessStatusLambdaTask)
+	updateServerSuccessStatusLambdaTask.AddCatch(notifyFailure, mkCatchProps()).Next(notifySuccess)
+	updateServerErrorStatusLambdaTask.AddCatch(notifyFailure, mkCatchProps()).Next(notifyFailure)
 
 	serverSM := sfn.NewStateMachine(stack, jsii.String("serverSM"), &sfn.StateMachineProps{
 		StateMachineName: jsii.String("serverSM"),
@@ -1239,6 +1321,27 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 
 	ecsUiService.Connections().AllowTo(rdsCluster, awsec2.Port_Tcp(jsii.Number(5432)), jsii.String("Allow connection from ecsUiService"))
 
+	// Connectivity info for lambda functions to apiserver
+	p := uiPort
+	s := uiLoadBalancer.LoadBalancerDnsName()
+	if os.Getenv("JETS_ELB_MODE") == "public" {
+		p = uiPort + 1
+		s = serviceLoadBalancer.LoadBalancerDnsName()
+	}
+	jetsApiUrl := fmt.Sprintf("http://%s:%.0f", *s, p)
+	statusUpdateLambda.Connections().AllowTo(uiLoadBalancer, awsec2.Port_Tcp(&p), jsii.String("Allow connection from StatusUpdateLambda"))
+	adminPwdSecret.GrantRead(statusUpdateLambda, nil)
+	statusUpdateLambda.AddEnvironment(
+		jsii.String("SYSTEM_PWD_SECRET"),
+		adminPwdSecret.SecretName(),
+		&awslambda.EnvironmentOptions{},	
+	)
+	statusUpdateLambda.AddEnvironment(
+		jsii.String("JETS_API_URL"),
+		jsii.String(jetsApiUrl),
+		&awslambda.EnvironmentOptions{},	
+	)
+
 	// Add the ELB alerts
 	AddElbAlarms(stack, "UiElb", uiLoadBalancer, alarmAction, props)
 	if os.Getenv("JETS_ELB_MODE") == "public" {
@@ -1291,15 +1394,8 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 	// rdsSecret.GrantRead(registerKeyLambda, nil)
 	// END Create a Lambda function to register File Keys with JetStore DB
 
-	// BEGIN ALTERNATE with python lamdba fnc
 	// Lambda to register key from s3
-	p := uiPort
-	s := uiLoadBalancer.LoadBalancerDnsName()
-	if os.Getenv("JETS_ELB_MODE") == "public" {
-		p = uiPort + 1
-		s = serviceLoadBalancer.LoadBalancerDnsName()
-	}
-	jetsApiUrl := fmt.Sprintf("http://%s:%.0f", *s, p)
+	// BEGIN ALTERNATE with python lamdba fnc
 	registerKeyLambda := awslambda.NewFunction(stack, jsii.String("registerKeyLambda"), &awslambda.FunctionProps{
 		Description: jsii.String("Lambda to register s3 key to JetStore"),
 		Code:        awslambda.NewAssetCode(jsii.String("lambdas"), nil),

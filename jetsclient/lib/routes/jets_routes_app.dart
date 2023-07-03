@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:adaptive_theme/adaptive_theme.dart';
 import 'package:jetsclient/routes/export_routes.dart';
 import 'package:jetsclient/screens/screen_form.dart';
+import 'package:jetsclient/screens/screen_multi_form.dart';
 import 'package:jetsclient/screens/screen_one.dart';
 import 'package:jetsclient/screens/screen_delegates/config_delegates.dart';
 import 'package:jetsclient/models/user.dart';
@@ -19,6 +20,7 @@ const sourceConfigPath = '/sourceConfig';
 const inputSourceMappingPath = '/inputSourceMapping';
 const processInputPath = '/processInput';
 const domainTableViewerPath = '/domainTableViewer/:table_name/:session_id';
+const queryToolPath = '/queryTool';
 const filePreviewPath = '/filePreviewPath/:file_key';
 const executionStatusDetailsPath = '/executionStatusDetails/:session_id';
 const processErrorsPath = '/processErrors/:session_id';
@@ -165,6 +167,17 @@ final Map<String, Widget> jetsRoutesMap = {
             return null;
           },
       tableConfig: getTableConfig(DTKeys.inputTable)),
+
+  // Query Tool
+  queryToolPath: ScreenWithMultiForms(
+      key: const Key(ScreenKeys.queryToolScreen),
+      screenPath: JetsRouteData(queryToolPath),
+      screenConfig: getScreenConfig(ScreenKeys.queryToolScreen),
+      formConfig: [
+        getFormConfig(FormKeys.queryToolInputForm),
+        getFormConfig(FormKeys.queryToolResultViewForm),
+      ],
+  ),
 
   // File Preview
   filePreviewPath: ScreenOne(

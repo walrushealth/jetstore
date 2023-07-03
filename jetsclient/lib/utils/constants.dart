@@ -47,6 +47,9 @@ class ScreenKeys {
   static const pipelineConfig = "pipelineConfigScreen";
   static const pipelineConfigEdit = "pipelineConfigEditScreen";
 
+  // Query Tool
+  static const queryToolScreen = "queryToolScreen";
+
   static const login = "loginScreen";
   static const register = "registerScreen";
   static const userAdmin = "userAdminScreen";
@@ -92,6 +95,9 @@ class FormKeys {
   static const viewProcessErrors = "viewProcessErrorsForm";
   static const viewInputRecords = "viewInputRecordsDialog";
   static const viewReteTriples = "viewReteTriplesDialog";
+  // Query Tool Forms
+  static const queryToolInputForm = "queryToolInputForm";
+  static const queryToolResultViewForm = "queryToolResultViewForm";
   // User Admin forms
   static const login = "login";
   static const register = "register";
@@ -109,6 +115,7 @@ class FormKeys {
 /// to keys expected in message sent to apiserver
 class FSK {
   static const key = "key";
+  static const label = "label";
   static const tableName = "table_name";
   static const fileKey = "file_key";
 
@@ -142,6 +149,12 @@ class FSK {
   static const domainKeyColumn =
       "domainKeyColumn"; // e.g. Eligibility:domain_key
   static const reteSessionTriples = "rete_session_triples";
+
+  // Query Tool
+  static const rawQuery = "raw_query";
+  static const rawQueryReady = "raw_query.ready";
+  static const rawDdlQueryReady = "raw_query.ddl.ready";
+  static const queryReady = "query.ready";
 
   // keys used for mapping
   // key for domain classes data properties
@@ -264,9 +277,15 @@ class ActionKeys {
   // for load file
   static const loaderOk = "loader.ok";
   static const loadAllFilesOk = "loadAllFiles.ok";
+  static const loaderMultiOk = "loaderMulti.ok";
 
   // to sync file key with web storage (s3)
   static const syncFileKey = "syncFileKey";
+
+  // Query Tool Actions
+  static const queryToolOk = "queryTool.ok";
+  static const queryToolDdlOk = "queryTool.ddl.ok";
+
 
   // for add process input dialog
   static const addProcessInputOk = "addProcessInputOk";
@@ -328,9 +347,13 @@ class DTKeys {
   // File Staging Area / Source Config DT
   static const sourceConfigTable = "sourceConfigTable";
   static const fileKeyStagingTable = "fileKeyStagingTable";
+  static const fileKeyStagingMultiLoadTable = "fileKeyStagingMultiLoadTable";
 
   // Domain Table Viewer DT
   static const inputTable = "inputTable";
+
+  // QueryTool ResultSetTable
+  static const queryToolResultSetTable = "queryToolResultSetTable";
 
   // Input File Viewer DT
   static const inputFileViewerTable = "inputFileViewerTable";

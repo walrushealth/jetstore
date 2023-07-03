@@ -1,10 +1,12 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:jetsclient/http_client.dart';
 import 'package:jetsclient/routes/export_routes.dart';
 import 'package:jetsclient/screens/components/data_table_model.dart';
+import 'package:jetsclient/screens/components/dialogs.dart';
 import 'package:jetsclient/screens/components/jets_form_state.dart';
 import 'package:jetsclient/utils/constants.dart';
 import 'package:jetsclient/utils/data_table_config.dart';
@@ -47,7 +49,9 @@ class JetsDataTableSource extends ChangeNotifier {
 
   /// returns the first selected row
   JetsRow? getFirstSelectedRow() {
-    for (int i = 0; i < rowCount; i++) {
+    if (model == null) return null;
+    final sz = min(selectedRows.length, model!.length);
+    for (int i = 0; i < sz; i++) {
       if (selectedRows[i]) {
         return model?[i];
       }
@@ -187,7 +191,8 @@ class JetsDataTableSource extends ChangeNotifier {
     // also drop selected row in form state that are no longer in the model
     // in case the where clause has changed
     formState.clearSelectedRow(config.group, config.key);
-    for (int index = 0; index < model!.length; index++) {
+    final sz = min(selectedRows.length, model!.length);
+    for (int index = 0; index < sz; index++) {
       final JetsRow row = model![index];
       var rowKeyValue = row[formStateConfig.keyColumnIdx];
       if (rowKeyValue != null && selValues.contains(rowKeyValue)) {
@@ -199,7 +204,8 @@ class JetsDataTableSource extends ChangeNotifier {
 
   void _onSelectChanged(int index, bool value) {
     if (state.tableConfig.isCheckboxSingleSelect && value) {
-      for (int i = 0; i < model!.length; i++) {
+      final sz = min(selectedRows.length, model!.length);
+      for (int i = 0; i < sz; i++) {
         if (selectedRows[i]) {
           selectedRows[i] = false;
           _updateFormState(i, false);
@@ -231,12 +237,16 @@ class JetsDataTableSource extends ChangeNotifier {
       cells: state.columnsConfig
           .where((e) => !e.isHidden)
           .map((e) => e.maxLines > 0
-              ? DataCell(SizedBox(
-                  width: e.columnWidth, //SET width
-                  child: Text(
-                    model![index][e.index] ?? 'null',
-                    maxLines: e.maxLines,
-                  )))
+              ? DataCell(
+                  SizedBox(
+                      width: e.columnWidth, //SET width
+                      child: Text(model![index][e.index] ?? 'null',
+                          maxLines: e.maxLines)), onLongPress: () {
+                  Clipboard.setData(
+                      ClipboardData(text: model![index][e.index] ?? 'null'));
+                  ScaffoldMessenger.of(state.context).showSnackBar(
+                      const SnackBar(content: Text("Copied to Clipboard")));
+                })
               : DataCell(Text(model![index][e.index] ?? 'null'),
                   onLongPress: () {
                   Clipboard.setData(
@@ -245,7 +255,7 @@ class JetsDataTableSource extends ChangeNotifier {
                       const SnackBar(content: Text("Copied to Clipboard")));
                 }))
           .toList(),
-      selected: selectedRows[index],
+      selected: selectedRows.length > index ? selectedRows[index] : false,
       onSelectChanged: state.isTableEditable && isWhereClauseSatisfied
           ? (bool? value) {
               if (value == null) return;
@@ -352,6 +362,7 @@ class JetsDataTableSource extends ChangeNotifier {
 
   dynamic _makeQuery() {
     final columns = state.tableConfig.columns;
+    final config = state.formFieldConfig;
     // reset _addWhereClauseOnClient
     _addWhereClauseOnClient = true;
     // Check if there is a select client in context
@@ -377,7 +388,29 @@ class JetsDataTableSource extends ChangeNotifier {
     if (!hasClientColumn) {
       _addWhereClauseOnClient = false;
     }
+    // The message aka DataTableAction (from data_table_action.go)
     var msg = <String, dynamic>{'action': state.tableConfig.apiAction};
+
+    // With clauses
+    List<Map<String, String>> withClauses = [];
+    for (final wc in state.tableConfig.withClauses) {
+      var stmt = wc.asStatement;
+      for (final k in wc.stateVariables) {
+        if (config == null) {
+          print(
+              "ERROR: Table having WITH statement but FormDataTableFieldConfig is null!");
+        }
+        final v = state.formState?.getValue(config!.group, k);
+        stmt = stmt.replaceAll(RegExp('{$k}'), v ?? 'NULL');
+      }
+      stmt = stmt.replaceAll(RegExp("'NULL'"), 'NULL');
+      withClauses.add(<String, String>{
+        'name': wc.withName,
+        'stmt': stmt,
+      });
+    }
+    msg['withClauses'] = withClauses;
+
     // from clauses (table name(s))
     List<Map<String, String>> fromClauses = [];
     for (final fc in state.tableConfig.fromClauses) {
@@ -392,10 +425,18 @@ class JetsDataTableSource extends ChangeNotifier {
           print("Error: Don't have a table_name!");
         }
       }
-      fromClauses.add(<String, String>{
-        'schema': fc.schemaName,
-        'table': table,
-      });
+      if (fc.asTableName.isNotEmpty) {
+        fromClauses.add(<String, String>{
+          'schema': fc.schemaName,
+          'table': table,
+          'asTable': fc.asTableName,
+        });
+      } else {
+        fromClauses.add(<String, String>{
+          'schema': fc.schemaName,
+          'table': table,
+        });
+      }
     }
     msg['fromClauses'] = fromClauses;
 
@@ -445,14 +486,49 @@ class JetsDataTableSource extends ChangeNotifier {
   }
 
   Future<Map<String, dynamic>?> fetchData() async {
+    // Check if we have a raw query / query tool
+    dynamic query;
+    if (state.tableConfig.apiAction == 'raw_query') {
+      final group = state.formFieldConfig?.group ?? 0;
+      var action = 'raw_query';
+      query = state.formState?.getValue(group, FSK.rawQueryReady);
+      if (query == null) {
+        query = state.formState?.getValue(group, FSK.rawDdlQueryReady);
+        if (query != null) {
+          action = 'exec_ddl';
+        }
+      }
+
+      query ??= state.tableConfig.sqlQuery?.sqlQuery;
+      if (query != null) {
+        query = query as String;
+        var vars = state.tableConfig.sqlQuery?.stateVariables;
+        if (vars != null) {
+          for (final k in vars) {
+            final v = state.formState?.getValue(group, k);
+            query = query.replaceAll(RegExp('{$k}'), v ?? 'NULL');
+          }
+        }
+        // The message aka DataTableAction (from data_table_action.go)
+        var msg = <String, dynamic>{'action': action};
+        msg['query'] = query;
+        if (state.tableConfig.requestColumnDef) {
+          msg['requestColumnDef'] = true;
+        }
+        query = msg;
+      }
+    } else {
+      query = _makeQuery();
+    }
     var result = await HttpClientSingleton().sendRequest(
         path: state.tableConfig.apiPath,
         token: JetsRouterDelegate().user.token,
-        encodedJsonBody: json.encode(_makeQuery()));
+        encodedJsonBody: json.encode(query));
 
     if (!state.mounted) return null;
     if (result.statusCode == 200) {
       // update the [model]
+      // print("*** Data Table Got Data");
       return result.body;
     } else if (result.statusCode == 401) {
       const snackBar = SnackBar(
@@ -465,12 +541,14 @@ class JetsDataTableSource extends ChangeNotifier {
         content: Text('Error reading data from table'),
       );
       ScaffoldMessenger.of(state.context).showSnackBar(snackBar);
+      showAlertDialog(state.context, result.body['error']);
       return null;
     } else {
       const snackBar = SnackBar(
         content: Text('Unknown Error reading data from table'),
       );
       ScaffoldMessenger.of(state.context).showSnackBar(snackBar);
+      showAlertDialog(state.context, result.body['error']);
       return null;
     }
   }
@@ -512,6 +590,7 @@ class JetsDataTableSource extends ChangeNotifier {
     } else {
       data = await fetchData();
     }
+    model = null;
     if (data != null) {
       // Check if we got columnDef back
       var columnDef = data['columnDef'] as List<dynamic>?;
@@ -538,10 +617,16 @@ class JetsDataTableSource extends ChangeNotifier {
       final rows = data['rows'] as List;
       model = rows.map((e) => (e as List).cast<String?>()).toList();
       // model = rows.cast<JetsRow>().toList();
-      _totalRowCount = data['totalRowCount'];
+      _totalRowCount = data['totalRowCount'] ?? model!.length;
       // Set selectedRows based on form state
       updateTableFromFormState();
       notifyListeners();
+      // reset the form state variable used for notification only
+      final group = state.formFieldConfig?.group ?? 0;
+      state.formState?.setValue(group, FSK.rawQueryReady, null);
+      state.formState?.setValue(group, FSK.rawDdlQueryReady, null);
+      state.formState?.setValue(group, FSK.queryReady, null);
+      state.formState?.resetUpdatedKeys(group);
     }
   }
 

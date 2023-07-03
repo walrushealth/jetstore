@@ -83,6 +83,10 @@ class JetsFormState extends ChangeNotifier {
   /// a where clause.
   final JetsFormState? parentFormState;
 
+  /// Applicable to form state for ScreenWithMultiForms;
+  /// To have access to all peer form state
+  List<JetsFormState>? peersFormState;
+
   /// The actual state of the form, keyed by validation group (list item)
   ///  and widget key
   final InternalFormState _state;
@@ -162,6 +166,11 @@ class JetsFormState extends ChangeNotifier {
     return _updatedKeys[group].contains(key);
   }
 
+  Set<String> getUpdatedKeys(int group) {
+    assert(group < groupCount, "invalid group");
+    return _updatedKeys[group];
+  }
+
   /// Check for keys marked as invalid, if any are found then the form does not
   /// pass validation
   bool isFormValid() {
@@ -190,7 +199,8 @@ class JetsFormState extends ChangeNotifier {
   void setValue(int group, String key, dynamic value) {
     // print(
     //     "setValue: group $group, key $key, value $value :: groupCount $groupCount");
-    assert(group < groupCount, "invalid group $group key is $key value $value");
+    assert(group < groupCount,
+        "setValue: invalid group: $group, key is $key, value $value");
     var didit = false;
     if (value == null) {
       // remove the binding if any

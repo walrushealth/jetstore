@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:jetsclient/screens/screen_delegates/config_delegates.dart';
 import 'package:jetsclient/screens/screen_delegates/process_errors_delegates.dart';
+import 'package:jetsclient/screens/screen_delegates/query_tool_screen_delegates.dart';
 import 'package:jetsclient/screens/screen_delegates/source_config_delegates.dart';
 import 'package:jetsclient/screens/screen_delegates/user_delegates.dart';
 
@@ -137,7 +138,7 @@ final Map<String, FormConfig> _formConfigurations = {
       ],
     ],
     formValidatorDelegate: registrationFormValidator,
-    formActionsDelegate:  registrationFormActions,
+    formActionsDelegate: registrationFormActions,
   ),
   // User Administration Form (actionless -- user table has the actions)
   FormKeys.userAdmin: FormConfig(
@@ -451,8 +452,14 @@ final Map<String, FormConfig> _formConfigurations = {
       [
         FormDataTableFieldConfig(
             key: FSK.sourcePeriodKey,
-            tableHeight: 600,
+            tableHeight: 300,
             dataTableConfig: FSK.sourcePeriodKey)
+      ],
+      [
+        FormDataTableFieldConfig(
+            key: DTKeys.fileKeyStagingMultiLoadTable,
+            tableHeight: 600,
+            dataTableConfig: DTKeys.fileKeyStagingMultiLoadTable)
       ],
     ],
     formValidatorDelegate: loadAllFilesValidator,
@@ -669,11 +676,11 @@ final Map<String, FormConfig> _formConfigurations = {
     ],
     queries: {
       "inputFieldsQuery":
-          "SELECT md.data_property, md.is_required, pm.input_column, pm.function_name, pm.argument, pm.default_value, pm.error_message FROM jetsapi.object_type_mapping_details md LEFT JOIN (SELECT * FROM jetsapi.process_mapping WHERE table_name = '{table_name}') pm ON md.data_property = pm.data_property WHERE md.object_type = '{object_type}' ORDER BY md.data_property ASC LIMIT 300",
+          "SELECT md.data_property, md.is_required, pm.input_column, pm.function_name, pm.argument, pm.default_value, pm.error_message FROM jetsapi.object_type_mapping_details md LEFT JOIN (SELECT * FROM jetsapi.process_mapping WHERE table_name = '{table_name}') pm ON md.data_property = pm.data_property WHERE md.object_type = '{object_type}' ORDER BY md.data_property ASC LIMIT 1000",
       "inputColumnsQuery":
           "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = '{table_name}' AND column_name NOT IN ('file_key','last_update','session_id','shard_id') ORDER BY column_name",
       "mappingFunctionsQuery":
-          "SELECT function_name, is_argument_required FROM jetsapi.mapping_function_registry ORDER BY function_name ASC LIMIT 50",
+          "SELECT function_name, is_argument_required FROM jetsapi.mapping_function_registry ORDER BY function_name ASC LIMIT 500",
     },
     inputFieldsQuery: "inputFieldsQuery",
     savedStateQuery: "inputFieldsQuery",
@@ -944,8 +951,7 @@ final Map<String, FormConfig> _formConfigurations = {
   FormKeys.pipelineConfigForm: FormConfig(
     key: FormKeys.pipelineConfigForm,
     title: "Pipeline Configuration",
-    actions: [
-    ],
+    actions: [],
     inputFields: [
       [
         FormDataTableFieldConfig(
@@ -1005,7 +1011,7 @@ final Map<String, FormConfig> _formConfigurations = {
             autofocus: false,
             obscureText: false,
             textRestriction: TextRestriction.digitsOnly,
-            maxLength: 3),
+            maxLength: 4),
       ],
       [
         PaddingConfig(height: defaultPadding),
@@ -1175,7 +1181,7 @@ final Map<String, FormConfig> _formConfigurations = {
     formActionsDelegate: processErrorsActions,
   ),
 
-  // View Input Records from Process Errors (table as actionless dialog)
+  // View Input Records for a domain key from Process Errors (table as actionless dialog)
   FormKeys.viewInputRecords: FormConfig(
     key: FormKeys.viewInputRecords,
     title: "Input Records for a Domain Key",
@@ -1188,14 +1194,99 @@ final Map<String, FormConfig> _formConfigurations = {
           rightMargin: defaultPadding,
           bottomMargin: defaultPadding),
     ],
-    inputFields: [
-      [
-        FormDataTableFieldConfig(
-            key: DTKeys.inputRecordsFromProcessErrorTable,
-            dataTableConfig: DTKeys.inputRecordsFromProcessErrorTable,
-            tableHeight: 600)
-      ],
+    queries: {
+      "inputFieldsQuery": """
+          WITH per AS (
+            SELECT 1 AS order,
+              'Main Input' AS label,
+              main_input_registry_key AS key
+            FROM jetsapi.pipeline_execution_status pes
+            WHERE pes.key = {pipeline_execution_status_key}
+            UNION
+            SELECT 2 AS order,
+              'Merged Input' AS label,
+              unnest(merged_input_registry_keys) AS key
+            FROM jetsapi.pipeline_execution_status pes
+            WHERE pes.key = {pipeline_execution_status_key}
+          ),
+          pcr AS (
+            SELECT 3 AS order,
+              'Injected Input' AS label,
+              unnest(pc.injected_process_input_keys) AS key
+            FROM jetsapi.pipeline_execution_status pe,
+              jetsapi.pipeline_config pc
+            WHERE pe.key = {pipeline_execution_status_key}
+              AND pe.pipeline_config_key = pc.key
+          )
+          SELECT t.order,
+            t.label,
+            t.table_name,
+            t.lookback_periods,
+            t.session_id,
+            {pipeline_execution_status_key} AS pipeline_execution_status_key,
+            '{object_type}' AS object_type,
+            '{domain_key}' AS domain_key
+          FROM (
+              SELECT per.order,
+                per.label,
+                pi.table_name,
+                pi.lookback_periods,
+                ir.session_id
+              FROM jetsapi.process_input pi,
+                jetsapi.input_registry ir,
+                per
+              WHERE ir.key = per.key
+                AND ir.client = pi.client
+                AND ir.org = pi.org
+                AND ir.object_type = pi.object_type
+                AND ir.table_name = pi.table_name
+              UNION
+              SELECT pcr.order,
+                pcr.label,
+                pi.table_name,
+                pi.lookback_periods,
+                NULL AS session_id
+              FROM jetsapi.process_input pi,
+                pcr
+              WHERE pi.key = pcr.key
+            ) AS t
+          ORDER BY t.order ASC""",
+    },
+    inputFieldsQuery: "inputFieldsQuery",
+    stateKeyPredicates: [
+      FSK.pipelineExectionStatusKey,
+      FSK.objectType,
+      FSK.domainKey,
     ],
+    // inputFieldRow: [order, label, table_name, lookback_periods, session_id,
+    //                 pipeline_execution_status_key, object_type, domain_key]
+    inputFieldRowBuilder: (index, inputFieldRow, formState) {
+      assert(inputFieldRow != null,
+          'viewInputRecords form builder: error inputFieldRow should not be null');
+      if (inputFieldRow == null) {
+        return [];
+      }
+      // set table predicate values to the formState
+      formState.setValue(index, FSK.label, inputFieldRow[1]);
+      formState.setValue(index, FSK.tableName, inputFieldRow[2]);
+      formState.setValue(index, FSK.lookbackPeriods, inputFieldRow[3]);
+      formState.setValue(index, FSK.sessionId, inputFieldRow[4]);
+      formState.setValue(
+          index, FSK.pipelineExectionStatusKey, inputFieldRow[5]);
+      formState.setValue(index, FSK.objectType, inputFieldRow[6]);
+      formState.setValue(index, FSK.domainKey, inputFieldRow[7]);
+      formState.setValue(
+          index, FSK.domainKeyColumn, '${inputFieldRow[6]}:domain_key');
+      return [
+        [
+          FormDataTableFieldConfig(
+              key: DTKeys.inputRecordsFromProcessErrorTable + index.toString(),
+              group: index,
+              dataTableConfig: DTKeys.inputRecordsFromProcessErrorTable,
+              tableHeight: 400)
+        ],
+      ];
+    },
     formValidatorDelegate: (formState, p2, p3, p4) => null,
     formActionsDelegate: processErrorsActions,
   ),
@@ -1235,6 +1326,59 @@ final Map<String, FormConfig> _formConfigurations = {
     formValidatorDelegate: (formState, p2, p3, p4) => null,
     formActionsDelegate: processErrorsActions,
   ),
+
+  // Query Tool Input Form
+  FormKeys.queryToolInputForm: FormConfig(
+    key: FormKeys.queryToolInputForm,
+    title: "Query Tool",
+    actions: [
+      FormActionConfig(
+          key: ActionKeys.queryToolOk,
+          label: "Submit Query",
+          buttonStyle: ActionStyle.primary,
+          leftMargin: betweenTheButtonsPadding,
+          rightMargin: defaultPadding,
+          bottomMargin: defaultPadding),
+      FormActionConfig(
+          key: ActionKeys.queryToolDdlOk,
+          label: "Submit DDL",
+          buttonStyle: ActionStyle.primary,
+          leftMargin: betweenTheButtonsPadding,
+          rightMargin: defaultPadding,
+          bottomMargin: defaultPadding),
+    ],
+    inputFields: [
+      [
+        FormInputFieldConfig(
+            key: FSK.rawQuery,
+            label: "Query",
+            hint: "Paste query",
+            autofocus: false,
+            obscureText: false,
+            textRestriction: TextRestriction.none,
+            maxLines: 10,
+            maxLength: 51200),
+      ],
+    ],
+    formValidatorDelegate: queryToolFormValidator,
+    formActionsDelegate: queryToolFormActions,
+  ),
+
+  // Query Tool Result Viewer Form
+  FormKeys.queryToolResultViewForm: FormConfig(
+    key: FormKeys.queryToolResultViewForm,
+    actions: [],
+    inputFields: [
+      [
+        FormDataTableFieldConfig(
+            key: DTKeys.queryToolResultSetTable,
+            dataTableConfig: DTKeys.queryToolResultSetTable,
+            tableHeight: 600)
+      ],
+    ],
+    formValidatorDelegate: queryToolFormValidator,
+    formActionsDelegate: queryToolFormActions,
+  ),
 };
 
 FormConfig getFormConfig(String key) {
@@ -1243,7 +1387,7 @@ FormConfig getFormConfig(String key) {
     config = getWorkspaceFormConfig(key);
     if (config == null) {
       throw Exception(
-        'ERROR: Invalid program configuration: form configuration $key not found');
+          'ERROR: Invalid program configuration: form configuration $key not found');
     }
   }
   return config;

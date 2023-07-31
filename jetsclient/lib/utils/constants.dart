@@ -4,9 +4,9 @@ const defaultPadding = 16.0;
 const betweenTheButtonsPadding = 8.0;
 
 /// Button action style, used by both JetsDataTable and JetsForm
-enum ActionStyle { primary, secondary, alternate, danger }
+enum ActionStyle { primary, secondary, alternate, menuSelected, menuAlternate, danger }
 
-ButtonStyle buttonStyle(ActionStyle style, ThemeData td) {
+ButtonStyle? buttonStyle(ActionStyle style, ThemeData td) {
   switch (style) {
     case ActionStyle.danger:
       return ElevatedButton.styleFrom(
@@ -25,6 +25,16 @@ ButtonStyle buttonStyle(ActionStyle style, ThemeData td) {
         foregroundColor: td.colorScheme.onPrimaryContainer,
         backgroundColor: Colors.orange.shade200,
       ).copyWith(elevation: ButtonStyleButton.allOrNull(0.0));
+
+    case ActionStyle.menuSelected:
+      return TextButton.styleFrom(
+        foregroundColor: td.colorScheme.onSecondaryContainer,
+        backgroundColor: td.colorScheme.primaryContainer,
+        textStyle: const TextStyle(fontWeight: FontWeight.bold),
+      ).copyWith(elevation: ButtonStyleButton.allOrNull(0.0));
+
+    case ActionStyle.menuAlternate:
+      return null;
 
     default: // primary
       return ElevatedButton.styleFrom(
@@ -107,6 +117,13 @@ class FormKeys {
   static const workspaceRegistry = "workspaceRegistry";
   static const workspaceHome = "workspaceHome";
   static const addWorkspace = "addWorkspace";
+  // Forms for each section of the workspace, incl file editor
+  // Note: The formConfig key is constructed in initializeWorkspaceFileEditor
+  static const workspaceFileEditor = "workspace.file.form";
+  static const wsDataModelForm = "workspace.data_model.form";
+  static const wsJetRulesForm = "workspace.jet_rules.form";
+  static const wsLookupsForm = "workspace.lookups.form";
+  // ... more to come
 }
 
 /// Form State Keys
@@ -205,6 +222,11 @@ class FSK {
   // Form Keys for Workspace IDE
   static const wsName = "workspace_name";
   static const wsURI = "workspace_uri";
+  static const wsFileName = "file_name";
+  static const wsFileEditorContent = "file_content";
+  static const wsOid = "oid";
+  // matching menuItem and current page (virtual page)
+  static const pageMatchKey = "pageMatchKey";
 
 
   // reserved keys for cache
@@ -315,6 +337,9 @@ class ActionKeys {
   static const addWorkspaceOk = "addWorkspaceOk";
   static const compileWorkspace = "compileWorkspace";
   static const openWorkspace = "openWorkspace";
+  static const wsSaveFileOk = "wsSaveFileOk";
+  static const deleteWorkspaceChanges = "deleteWorkspaceChanges";
+  static const deleteAllWorkspaceChanges = "deleteAllWorkspaceChanges";
 }
 
 /// Form Action Keys
@@ -380,10 +405,19 @@ class DTKeys {
 
   // Workspace IDE DT
   static const workspaceRegistryTable = "workspaceRegistryTable";
-  static const wsDomainClassesTable = "wsDomainClassesTable";
-  static const wsDomainTablesTable = "wsDomainTablesTable";
-  static const wsLookupsTable = "wsLookupsTable";
+  static const workspaceChangesTable = "workspaceChangesTable";
+  
+  // Workspace - Data Model Tables
+  static const wsDomainTableTable = "wsDomainTableTable";
+  static const wsDomainClassTable = "wsDomainClassTable";
+  static const wsDataPropertyTable = "wsDataPropertyTable";
+
+  // Workspace - Jet Rules Tables
   static const wsJetRulesTable = "wsJetRulesTable";
+  static const wsRuleTermsTable = "wsRuleTermsTable";
+  static const wsMainSupportFilesTable = "wsMainSupportFilesTable";
+
+  static const wsLookupsTable = "wsLookupsTable";
 }
 
 /// API Server endpoints

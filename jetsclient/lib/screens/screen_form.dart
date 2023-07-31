@@ -16,9 +16,11 @@ class ScreenWithForm extends BaseScreen {
     required this.formConfig,
   }) : super(builder: (BuildContext context, State<BaseScreen> baseState) {
           final state = baseState as ScreenWithFormState;
+          // print("*** BUILDING ScreenWithForm: ${screenConfig.title}");
           return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if(screenConfig.title != null)
                 Flexible(
                   flex: 1,
                   fit: FlexFit.tight,
@@ -26,7 +28,7 @@ class ScreenWithForm extends BaseScreen {
                     padding: const EdgeInsets.fromLTRB(
                         defaultPadding, 2 * defaultPadding, 0, 0),
                     child: Text(
-                      screenConfig.title,
+                      screenConfig.title!,
                       style: Theme.of(context).textTheme.headlineMedium,
                     ),
                   ),
@@ -36,11 +38,13 @@ class ScreenWithForm extends BaseScreen {
                   fit: FlexFit.tight,
                   child: formConfig.formTabsConfig.isNotEmpty
                       ? JetsFormWithTabs(
+                          key: GlobalKey(),
                           formPath: screenPath,
                           formState: state.formState,
                           formKey: state.formKey,
                           formConfig: formConfig)
                       : JetsForm(
+                          key: GlobalKey(),
                           formPath: screenPath,
                           formState: state.formState,
                           formKey: state.formKey,
@@ -58,7 +62,6 @@ class ScreenWithForm extends BaseScreen {
 class ScreenWithFormState extends BaseScreenState {
   late final JetsFormState formState;
   final formKey = GlobalKey<FormState>();
-  late final FormConfig formConfig;
 
   ScreenWithForm get _widget => super.widget as ScreenWithForm;
   ValidatorDelegate get validatorDelegate =>
@@ -70,13 +73,25 @@ class ScreenWithFormState extends BaseScreenState {
   void initState() {
     super.initState();
     formState = _widget.formConfig.makeFormState();
+    triggetRefreshListner();
+    JetsRouterDelegate().addListener(triggetRefreshListner);
+  }
 
-    // Initialize the Form State with the current navigation params
+  void triggetRefreshListner() {
     JetsRouterDelegate().currentConfiguration?.params.forEach((key, value) {
       formState.setValue(0, key, value);
     });
     // reset the updated keys since these updates is to put default values
     // and is not from user interactions
+    //* TODO - Stop using group 0 as a special group with validation keys
     formState.resetUpdatedKeys(0);
+    setState(() {});
   }
+
+  @override
+  void dispose() {
+    JetsRouterDelegate().removeListener(triggetRefreshListner);
+    super.dispose();
+  }
+
 }

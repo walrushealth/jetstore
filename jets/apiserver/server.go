@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
+	"github.com/artisoft-io/jetstore/jets/datatable"
+	"github.com/artisoft-io/jetstore/jets/dbutils"
 	"github.com/artisoft-io/jetstore/jets/schema"
 	"github.com/artisoft-io/jetstore/jets/user"
 	"github.com/artisoft-io/jetstore/jets/workspace"
@@ -222,18 +224,27 @@ func (server *Server) checkJetStoreDbVersion() error {
 	return nil
 }
 
-// Download overriten workspace files from s3
-// Check the workspace version in db, if jetstore version is more recent, recompile workspace
+// Download overriten workspace files from jetstore database
+// Check the workspace version in db, if jetstore image version is more recent, recompile workspace
 func (server *Server) checkWorkspaceVersion() error {
-	// Download overriten workspace files from s3 if any
+	var err error
 	workspaceName := os.Getenv("WORKSPACE")
-	err := workspace.SyncWorkspaceFiles(workspaceName, devMode)
+
+	// Copy the workspace files to a stash location (needed when we delete/revert file changes)
+	err = datatable.StashWorkspaceFiles(workspaceName)
 	if err != nil {
-		log.Println("Error while synching workspace file from s3:",err)
-		return err
+		//* TODO Log to a new workspace error table to report in UI
+		log.Printf("Error while stashing workspace file: %v", err)
+	}
+
+	// Download overriten workspace files from s3 if any
+	err = workspace.SyncWorkspaceFiles(server.dbpool, workspaceName, dbutils.FO_Open, "", devMode)
+	if err != nil {
+		//* TODO Log to a new workspace error table to report in UI
+		log.Println("Error while synching workspace file from database:",err)
 	}
 	// Check if need to recompile workspace, skip if in dev mode
-	if os.Getenv("JETSTORE_DEV_MODE") != "" {
+	if devMode {
 		// We're in dev mode, the user is responsible to compile workspace when needed
 		return nil
 	}
@@ -408,6 +419,24 @@ func listenAndServe() error {
 	server.Router.Handle("/assets/assets/fonts/Roboto-Bold.ttf", fs).Methods("GET")
 	server.Router.Handle("/assets/assets/fonts/Roboto-Black.ttf", fs).Methods("GET")
 	server.Router.Handle("/assets/assets/fonts/Roboto-LightItalic.ttf", fs).Methods("GET")
+
+	server.Router.Handle("/assets/assets/fonts/Roboto-LightItalic.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-BoldItalic.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-Bold.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-ExtraLightItalic.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-ExtraLight.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-Italic.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-Italic-VariableFont_wght.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-LightItalic.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-Light.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-MediumItalic.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-Medium.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-Regular.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-SemiBoldItalic.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-SemiBold.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-ThinItalic.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-Thin.ttf", fs).Methods("GET")
+	server.Router.Handle("/assets/assets/fonts/VictorMono-VariableFont_wght.ttf", fs).Methods("GET")
 	server.Router.Handle("/assets/assets/images/logo.png", fs).Methods("GET")
 	server.Router.Handle("/assets/FontManifest.json", fs).Methods("GET")
 	server.Router.Handle("/assets/packages/cupertino_icons/assets/CupertinoIcons.ttf", fs).Methods("GET")

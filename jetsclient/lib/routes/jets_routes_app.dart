@@ -6,6 +6,7 @@ import 'package:jetsclient/screens/screen_multi_form.dart';
 import 'package:jetsclient/screens/screen_one.dart';
 import 'package:jetsclient/screens/screen_delegates/config_delegates.dart';
 import 'package:jetsclient/models/user.dart';
+import 'package:jetsclient/screens/screen_tab_form.dart';
 import 'package:jetsclient/utils/constants.dart';
 import 'package:jetsclient/utils/data_table_config_impl.dart';
 import 'package:jetsclient/utils/form_config_impl.dart';
@@ -27,7 +28,8 @@ const processErrorsPath = '/processErrors/:session_id';
 
 const processConfigPath = '/processConfig';
 const pipelineConfigPath = '/pipelineConfig/:x';
-const pipelineConfigEditFormPath = '/pipelineConfig/edit/:key/:client/:process_name/:process_config_key/:main_process_input_key/:merged_process_input_keys/:main_object_type/:main_source_type/:source_period_type/:automated/:description/:max_rete_sessions_saved/:injected_process_input_keys';
+const pipelineConfigEditFormPath =
+    '/pipelineConfig/edit/:key/:client/:process_name/:process_config_key/:main_process_input_key/:merged_process_input_keys/:main_object_type/:main_source_type/:source_period_type/:automated/:description/:max_rete_sessions_saved/:injected_process_input_keys';
 const pageNotFoundPath = '/404';
 const loginPath = '/login';
 const registerPath = '/register';
@@ -35,61 +37,64 @@ const userAdminPath = '/userAdmin';
 
 // Workspace IDE paths
 const workspaceRegistryPath = '/workspaces';
-const workspaceHomePath = '/workspace/:ws_name/home';
-const wsDomainClassesPath = '/workspace/:ws_name/domainClasses';
-const wsDomainClasseDetailsPath = '/workspace/:ws_name/domainClasses/:class_name';
-const wsDomainTablesPath = '/workspace/:ws_name/domainTables';
-const wsDomainTableDetailsPath = '/workspace/:ws_name/domainTables/:table_name';
-const wsJetRulesPath = '/workspace/:ws_name/jetRules';
-const wsJetRuleDetailsPath = '/workspace/:ws_name/jetRules/:rule_name';
+const workspaceHomePath = '/workspaces/:workspace_name/home';
+
+const wsDomainClassesPath = '/workspaces/:workspace_name/domainClasses';
+const wsDomainClasseDetailsPath =
+    '/workspaces/:workspace_name/domainClasses/:class_name';
+const wsDomainTablesPath = '/workspaces/:workspace_name/domainTables';
+const wsDomainTableDetailsPath =
+    '/workspaces/:workspace_name/domainTables/:table_name';
+const wsJetRulesPath = '/workspaces/:workspace_name/jetRules';
+const wsJetRuleDetailsPath = '/workspaces/:workspace_name/jetRules/:rule_name';
 
 final Map<String, Widget> jetsRoutesMap = {
   // Home Screen
   homePath: ScreenWithForm(
-      key: const Key(ScreenKeys.home),
-      screenPath: JetsRouteData(homePath),
-      screenConfig: getScreenConfig(ScreenKeys.home),
-      formConfig: getFormConfig(FormKeys.home),
+    key: const Key(ScreenKeys.home),
+    screenPath: JetsRouteData(homePath),
+    screenConfig: getScreenConfig(ScreenKeys.home),
+    formConfig: getFormConfig(FormKeys.home),
   ),
 
   // Client & Organization Admin
   clientAdminPath: ScreenWithForm(
-      key: const Key(ScreenKeys.clientAdmin),
-      screenPath: JetsRouteData(clientAdminPath),
-      screenConfig: getScreenConfig(ScreenKeys.clientAdmin),
-      formConfig: getFormConfig(FormKeys.clientAdmin),
+    key: const Key(ScreenKeys.clientAdmin),
+    screenPath: JetsRouteData(clientAdminPath),
+    screenConfig: getScreenConfig(ScreenKeys.clientAdmin),
+    formConfig: getFormConfig(FormKeys.clientAdmin),
   ),
 
   // Source Config
   sourceConfigPath: ScreenWithForm(
-      key: const Key(ScreenKeys.sourceConfig),
-      screenPath: JetsRouteData(sourceConfigPath),
-      screenConfig: getScreenConfig(ScreenKeys.sourceConfig),
-      formConfig: getFormConfig(FormKeys.sourceConfig),
+    key: const Key(ScreenKeys.sourceConfig),
+    screenPath: JetsRouteData(sourceConfigPath),
+    screenConfig: getScreenConfig(ScreenKeys.sourceConfig),
+    formConfig: getFormConfig(FormKeys.sourceConfig),
   ),
 
   // Input Source Mapping
   inputSourceMappingPath: ScreenWithForm(
-      key: const Key(ScreenKeys.inputSourceMapping),
-      screenPath: JetsRouteData(inputSourceMappingPath),
-      screenConfig: getScreenConfig(ScreenKeys.inputSourceMapping),
-      formConfig: getFormConfig(FormKeys.inputSourceMapping),
+    key: const Key(ScreenKeys.inputSourceMapping),
+    screenPath: JetsRouteData(inputSourceMappingPath),
+    screenConfig: getScreenConfig(ScreenKeys.inputSourceMapping),
+    formConfig: getFormConfig(FormKeys.inputSourceMapping),
   ),
 
   // Process Input
   processInputPath: ScreenWithForm(
-      key: const Key(ScreenKeys.processInput),
-      screenPath: JetsRouteData(processInputPath),
-      screenConfig: getScreenConfig(ScreenKeys.processInput),
-      formConfig: getFormConfig(FormKeys.processInput),
+    key: const Key(ScreenKeys.processInput),
+    screenPath: JetsRouteData(processInputPath),
+    screenConfig: getScreenConfig(ScreenKeys.processInput),
+    formConfig: getFormConfig(FormKeys.processInput),
   ),
 
   // Process Config and Client Rule Config
   processConfigPath: ScreenWithForm(
-      key: const Key(ScreenKeys.processConfig),
-      screenPath: JetsRouteData(processConfigPath),
-      screenConfig: getScreenConfig(ScreenKeys.processConfig),
-      formConfig: getFormConfig(FormKeys.processConfig),
+    key: const Key(ScreenKeys.processConfig),
+    screenPath: JetsRouteData(processConfigPath),
+    screenConfig: getScreenConfig(ScreenKeys.processConfig),
+    formConfig: getFormConfig(FormKeys.processConfig),
   ),
 
   // Workspace IDE - Workspace Registry
@@ -100,21 +105,14 @@ final Map<String, Widget> jetsRoutesMap = {
       formConfig: getFormConfig(FormKeys.workspaceRegistry)),
 
   // Workspace IDE - Workspace Home
-  workspaceHomePath: ScreenWithForm(
-      key: const Key(ScreenKeys.workspaceHome),
-      screenPath: JetsRouteData(workspaceHomePath),
-      screenConfig: getScreenConfig(ScreenKeys.workspaceHome),
-      formConfig: getFormConfig(FormKeys.workspaceHome),
+  workspaceHomePath: ScreenWithTabsWithForm(
+    key: const Key(ScreenKeys.workspaceHome),
+    screenPath: JetsRouteData(workspaceHomePath),
+    screenConfig: getScreenConfig(ScreenKeys.workspaceHome),
+    formConfig: getFormConfig(FormKeys.workspaceHome),
   ),
 
-  // Pipeline Config (screen removed but still defined for future use)
-  // pipelineConfigPath: ScreenWithForm(
-  //   key: const Key(ScreenKeys.pipelineConfig),
-  //   screenPath: JetsRouteData(pipelineConfigPath),
-  //   screenConfig: getScreenConfig(ScreenKeys.pipelineConfig),
-  //   formConfig: getFormConfig(FormKeys.pipelineConfigForm),
-  //   formValidatorDelegate: pipelineConfigFormValidator,
-  //   formActionsDelegate: pipelineConfigFormActions),
+  // Pipeline Config
   pipelineConfigPath: ScreenOne(
     key: const Key(ScreenKeys.pipelineConfig),
     screenPath: JetsRouteData(pipelineConfigPath),
@@ -134,26 +132,26 @@ final Map<String, Widget> jetsRoutesMap = {
 
   // Login Screen
   loginPath: ScreenWithForm(
-      key: const Key(ScreenKeys.login),
-      screenPath: JetsRouteData(loginPath),
-      screenConfig: getScreenConfig(ScreenKeys.login),
-      formConfig: getFormConfig(FormKeys.login),
+    key: const Key(ScreenKeys.login),
+    screenPath: JetsRouteData(loginPath),
+    screenConfig: getScreenConfig(ScreenKeys.login),
+    formConfig: getFormConfig(FormKeys.login),
   ),
 
   // Register Screen
   registerPath: ScreenWithForm(
-      key: const Key(ScreenKeys.register),
-      screenPath: JetsRouteData(registerPath),
-      screenConfig: getScreenConfig(ScreenKeys.register),
-      formConfig: getFormConfig(FormKeys.register),
+    key: const Key(ScreenKeys.register),
+    screenPath: JetsRouteData(registerPath),
+    screenConfig: getScreenConfig(ScreenKeys.register),
+    formConfig: getFormConfig(FormKeys.register),
   ),
 
   // User Adminstration Screen
   userAdminPath: ScreenWithForm(
-      key: const Key(ScreenKeys.userAdmin),
-      screenPath: JetsRouteData(userAdminPath),
-      screenConfig: getScreenConfig(ScreenKeys.userAdmin),
-      formConfig: getFormConfig(FormKeys.userAdmin),
+    key: const Key(ScreenKeys.userAdmin),
+    screenPath: JetsRouteData(userAdminPath),
+    screenConfig: getScreenConfig(ScreenKeys.userAdmin),
+    formConfig: getFormConfig(FormKeys.userAdmin),
   ),
 
   // Domain Table Viewer
@@ -164,19 +162,19 @@ final Map<String, Widget> jetsRoutesMap = {
       validatorDelegate: (formState, p2, p3, p4) => null,
       actionsDelegate: (context, formKey, formState, actionKey,
           {group = 0}) async {
-            return null;
-          },
+        return null;
+      },
       tableConfig: getTableConfig(DTKeys.inputTable)),
 
   // Query Tool
   queryToolPath: ScreenWithMultiForms(
-      key: const Key(ScreenKeys.queryToolScreen),
-      screenPath: JetsRouteData(queryToolPath),
-      screenConfig: getScreenConfig(ScreenKeys.queryToolScreen),
-      formConfig: [
-        getFormConfig(FormKeys.queryToolInputForm),
-        getFormConfig(FormKeys.queryToolResultViewForm),
-      ],
+    key: const Key(ScreenKeys.queryToolScreen),
+    screenPath: JetsRouteData(queryToolPath),
+    screenConfig: getScreenConfig(ScreenKeys.queryToolScreen),
+    formConfig: [
+      getFormConfig(FormKeys.queryToolInputForm),
+      getFormConfig(FormKeys.queryToolResultViewForm),
+    ],
   ),
 
   // File Preview
@@ -187,8 +185,8 @@ final Map<String, Widget> jetsRoutesMap = {
       validatorDelegate: (formState, p2, p3, p4) => null,
       actionsDelegate: (context, formKey, formState, actionKey,
           {group = 0}) async {
-            return null;
-          },
+        return null;
+      },
       tableConfig: getTableConfig(DTKeys.inputFileViewerTable)),
 
   // Pipeline Execution Status Details Viewer
@@ -199,16 +197,16 @@ final Map<String, Widget> jetsRoutesMap = {
       validatorDelegate: (formState, p2, p3, p4) => null,
       actionsDelegate: (context, formKey, formState, actionKey,
           {group = 0}) async {
-            return null;
-          },
+        return null;
+      },
       tableConfig: getTableConfig(DTKeys.pipelineExecDetailsTable)),
 
   // Process Errors Viewer
   processErrorsPath: ScreenWithForm(
-      key: const Key(ScreenKeys.processErrorsTable),
-      screenPath: JetsRouteData(processErrorsPath),
-      screenConfig: getScreenConfig(ScreenKeys.processErrorsTable),
-      formConfig: getFormConfig(FormKeys.viewProcessErrors),
+    key: const Key(ScreenKeys.processErrorsTable),
+    screenPath: JetsRouteData(processErrorsPath),
+    screenConfig: getScreenConfig(ScreenKeys.processErrorsTable),
+    formConfig: getFormConfig(FormKeys.viewProcessErrors),
   ),
 
   // Page Not Found

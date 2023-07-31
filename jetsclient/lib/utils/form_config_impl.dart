@@ -40,6 +40,7 @@ final Map<String, FormConfig> _formConfigurations = {
   // Login Form
   FormKeys.login: FormConfig(
     key: FormKeys.login,
+    useListView: true,
     actions: [
       FormActionConfig(
           key: ActionKeys.login,
@@ -84,6 +85,7 @@ final Map<String, FormConfig> _formConfigurations = {
   // User Registration Form
   FormKeys.register: FormConfig(
     key: FormKeys.register,
+    useListView: true,
     actions: [
       FormActionConfig(
           key: ActionKeys.register,
@@ -640,6 +642,7 @@ final Map<String, FormConfig> _formConfigurations = {
             whereStateContains: {FSK.sourceType: 'alias_domain_table'}),
       ],
     ],
+    useListView: true,
     formValidatorDelegate: processInputFormValidator,
     formActionsDelegate: processInputFormActions,
   ),
@@ -923,16 +926,6 @@ final Map<String, FormConfig> _formConfigurations = {
             key: DTKeys.clientsAndProcessesTableView,
             tableHeight: 400,
             dataTableConfig: DTKeys.clientsAndProcessesTableView),
-      ],
-      [
-        // Instruction
-        TextFieldConfig(
-            label: "To view and/or edit the Client Rule Configuration,"
-                " select a Client and a Rule Process above "
-                " to see the configuration triples below.",
-            maxLines: 5,
-            topMargin: defaultPadding,
-            bottomMargin: defaultPadding)
       ],
       [
         FormDataTableFieldConfig(

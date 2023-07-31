@@ -3,6 +3,8 @@ import 'package:jetsclient/routes/jets_routes_app.dart';
 import 'package:jetsclient/routes/jets_route_data.dart';
 import 'package:jetsclient/routes/jets_router_delegate.dart';
 import 'package:jetsclient/screens/components/app_bar.dart';
+import 'package:jetsclient/screens/components/dialogs.dart';
+import 'package:jetsclient/screens/components/jets_tab_controller.dart';
 import 'package:jetsclient/screens/components/spinner_overlay.dart';
 import 'package:jetsclient/utils/constants.dart';
 import 'package:jetsclient/utils/form_config.dart';
@@ -30,24 +32,105 @@ class BaseScreen extends StatefulWidget {
   State<BaseScreen> createState() => BaseScreenState();
 }
 
-class BaseScreenState extends State<BaseScreen> {
+class BaseScreenState extends State<BaseScreen> with TickerProviderStateMixin {
+  final tabsStateHelper = JetsTabsStateHelper();
+  late var tabController = TabController(length: 0, vsync: this);
+
   @override
   void initState() {
+    // print("*** base_screen initState called with key ${widget.key}");
     super.initState();
     JetsRouterDelegate().addListener(navListener);
+    tabsStateHelper.addListener(navListener);
   }
 
   void navListener() async {
-    if (JetsRouterDelegate().currentConfiguration?.path == homePath &&
+    // print("*** BaseScreenState navListener called...");
+    if (JetsRouterDelegate().currentConfiguration?.path ==
+            widget.screenPath.path &&
         mounted) {
       setState(() {});
     }
   }
 
+  void syncMenuWithTab() {
+    // print("*** BaseScreenState * syncMenuWithTab called with tabIndex ${tabController.index}");
+    // Put the file name in current route config so the menu gets highlighted
+    JetsRouterDelegate().currentConfiguration!.params[FSK.pageMatchKey] =
+        tabsStateHelper.tabsParams[tabController.index].pageMatchKey;
+    setState(() {});
+  }
+
+  void removeRecursive(MenuEntry menuEntry, int index) {
+    final tabIndex = menuEntry.routeParams?['tab.index'] as int?;
+    if (tabIndex != null && tabIndex >= index) {
+      if (tabIndex == index) {
+        // Got it, erase the tab.index
+        menuEntry.routeParams!['tab.index'] = null;
+      } else {
+        // reduce tabIndex by 1
+        menuEntry.routeParams!['tab.index'] = tabIndex - 1;
+      }
+    }
+    for (var childEntry in menuEntry.children) {
+      removeRecursive(childEntry, index);
+    }
+  }
+
+  void removeTab(int index) {
+    // print(
+    //     "*** removeTab called @ $index with ${JetsRouterDelegate().workspaceMenuState.length}");
+    for (var menuEntry in JetsRouterDelegate().workspaceMenuState) {
+      removeRecursive(menuEntry, index);
+    }
+    tabsStateHelper.removeTab(index: index);
+    resetTabController(
+        index > 0 ? index - 1 : 0, tabsStateHelper.tabsParams.length);
+    syncMenuWithTab();
+  }
+
+  void resetTabController(int initialIndex, int length) {
+    tabController.removeListener(syncMenuWithTab);
+    tabController.dispose();
+    tabController =
+        TabController(length: length, initialIndex: initialIndex, vsync: this);
+    tabController.addListener(syncMenuWithTab);
+  }
+
   @override
   void dispose() {
     JetsRouterDelegate().removeListener(navListener);
+    tabController.removeListener(syncMenuWithTab);
+    tabController.dispose();
     super.dispose();
+  }
+
+  ActionStyle getActionStyle(MenuEntry menuEntry) {
+    final routeData = JetsRouterDelegate().currentConfiguration;
+    if (routeData == null) return menuEntry.otherPageStyle;
+    if (menuEntry.pageMatchKey == null) {
+      return routeData.path == menuEntry.routePath
+          ? menuEntry.onPageStyle
+          : menuEntry.otherPageStyle;
+    }
+    return routeData.params[FSK.pageMatchKey] == menuEntry.pageMatchKey
+        ? menuEntry.onPageStyle
+        : menuEntry.otherPageStyle;
+  }
+
+  // Note: The menuAction may do the routing, hence doing menuAction first.
+  //       If no menuAction, do routing only if defined, otherwise do nothing
+  void doMenuOnPress(MenuEntry menuEntry) async {
+    if (menuEntry.menuAction != null) {
+      final statusCode = await menuEntry.menuAction!(context, menuEntry, this);
+      if (statusCode != 200) {
+        showAlertDialog(context, 'Something went wrong. Please try again.');
+      }
+      navListener();
+    } else if (menuEntry.routePath != null) {
+      JetsRouterDelegate()(
+          JetsRouteData(menuEntry.routePath!, params: menuEntry.routeParams));
+    }
   }
 
   TreeNode _makeTreeNode(int level, BuildContext context, ThemeData themeData,
@@ -57,28 +140,21 @@ class BaseScreenState extends State<BaseScreen> {
             .map((e) => _makeTreeNode(level + 1, context, themeData, e))
             .toList()
         : null;
-    fn() => menuEntry.routePath != null
-        ? JetsRouterDelegate()(JetsRouteData(menuEntry.routePath!))
-        : menuEntry.menuAction != null
-            ? menuEntry.menuAction!(context)
-            : null;
+    // Note: The menuAction may do the routing, hence doing menuAction first.
+    //       If no menuAction, do routing only if defined, otherwise do nothing
     return TreeNode(
         content: (level == 0)
             ? Expanded(
                 child: ElevatedButton(
-                  style: buttonStyle(
-                      JetsRouterDelegate().currentConfiguration?.path ==
-                              menuEntry.routePath
-                          ? menuEntry.onPageStyle
-                          : menuEntry.otherPageStyle,
-                      themeData),
-                  onPressed: fn,
+                  style: buttonStyle(getActionStyle(menuEntry), themeData),
+                  onPressed: () => doMenuOnPress(menuEntry),
                   child: Center(child: Text(menuEntry.label)),
                 ),
               )
             : Expanded(
                 child: TextButton(
-                  onPressed: fn,
+                  style: buttonStyle(getActionStyle(menuEntry), themeData),
+                  onPressed: () => doMenuOnPress(menuEntry),
                   child: Align(
                       alignment: Alignment.centerLeft,
                       child: Text(
@@ -99,20 +175,26 @@ class BaseScreenState extends State<BaseScreen> {
 
     switch (widget.screenConfig.type) {
       case ScreenType.home:
+        // Home screen and all (pipeline) config & operational pages
+        // All screen with client filter
         dropdownItems.addAll(JetsRouterDelegate().clients);
-        JetsRouterDelegate().workspaceMenuState = [];
+        // JetsRouterDelegate().workspaceMenuState = [];
         menuEntries = JetsRouterDelegate().user.isAdmin
             ? widget.screenConfig.adminMenuEntries
             : widget.screenConfig.menuEntries;
         break;
       case ScreenType.other:
+        // All screens w/o client filter
+        // Screens w/o workspace content as left menu tree
         JetsRouterDelegate().selectedClient = null;
-        JetsRouterDelegate().workspaceMenuState = [];
+        // JetsRouterDelegate().workspaceMenuState = [];
         menuEntries = JetsRouterDelegate().user.isAdmin
             ? widget.screenConfig.adminMenuEntries
             : widget.screenConfig.menuEntries;
         break;
       case ScreenType.workspace:
+        // All workspace IDE screens w/o client filter
+        // All screens with workspace content in left menu tree
         JetsRouterDelegate().selectedClient = null;
         menuEntries = JetsRouterDelegate().workspaceMenuState;
         break;
@@ -121,12 +203,13 @@ class BaseScreenState extends State<BaseScreen> {
         print(
             'Oops unknown widget.screenConfig.type: ${widget.screenConfig.type}');
     }
-
+    // print("*** BUILDING BaseScreen");
     return Scaffold(
         appBar: appBar(
             context, widget.screenConfig.appBarLabel, widget.screenConfig,
             showLogout: widget.screenConfig.showLogout),
         body: SplitView(
+          // SplitView: Left menu & client area
           viewMode: SplitViewMode.Horizontal,
           indicator: const SplitIndicator(viewMode: SplitViewMode.Horizontal),
           activeIndicator: const SplitIndicator(
@@ -139,8 +222,10 @@ class BaseScreenState extends State<BaseScreen> {
           onWeightChanged: (w) =>
               JetsRouterDelegate().splitViewControllerWeights = w,
           children: [
+            // Left menu
             Column(children: [
               const SizedBox(height: defaultPadding),
+              // JetStore logo as button to home screen
               Expanded(
                   flex: 3,
                   child: ConstrainedBox(
@@ -152,6 +237,7 @@ class BaseScreenState extends State<BaseScreen> {
                           icon: Image.asset(widget.screenConfig.leftBarLogo)))),
               const SizedBox(height: defaultPadding),
               if (widget.screenConfig.type == ScreenType.home)
+                // Client filter drop down in left menu
                 Expanded(
                   flex: 1,
                   child: Padding(
@@ -169,6 +255,7 @@ class BaseScreenState extends State<BaseScreen> {
                             .toList()),
                   ),
                 ),
+              // Left menu as TreeView
               Expanded(
                 flex: 24,
                 child: SingleChildScrollView(
@@ -180,6 +267,7 @@ class BaseScreenState extends State<BaseScreen> {
                 ),
               )
             ]),
+            // Client area
             JetsSpinnerOverlay(child: widget.builder(context, this)),
           ],
         ));

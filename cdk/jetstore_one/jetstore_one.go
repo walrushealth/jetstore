@@ -14,7 +14,7 @@ import (
 	awselb "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
-	"github.com/aws/aws-cdk-go/awscdk/v2/awss3assets"
+	// "github.com/aws/aws-cdk-go/awscdk/v2/awss3assets"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
 
 	// "github.com/aws/aws-cdk-go/awscdk/v2/awslambdaeventsources"
@@ -28,7 +28,7 @@ import (
 	jsii "github.com/aws/jsii-runtime-go"
 
 	awslambdago "github.com/aws/aws-cdk-go/awscdklambdagoalpha/v2"
-	s3deployment "github.com/aws/aws-cdk-go/awscdk/v2/awss3deployment"
+	// s3deployment "github.com/aws/aws-cdk-go/awscdk/v2/awss3deployment"
 )
 
 type DbClusterVisitor struct {
@@ -281,16 +281,16 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 		Value: sourceBucket.BucketName(),
 	})
 
-	// Copy test files from workspace data folder to the bucket
-	testFilesPath := fmt.Sprintf("%s/%s/data/test_data", os.Getenv("WORKSPACES_HOME"), os.Getenv("WORKSPACE"))
-	s3deployment.NewBucketDeployment(stack, jsii.String("WorkspaceTestFilesDeployment"), &s3deployment.BucketDeploymentProps{
-		Sources: &[]s3deployment.ISource{
-			s3deployment.Source_Asset(jsii.String(testFilesPath), &awss3assets.AssetOptions{}),
-		},
-		DestinationBucket:    sourceBucket,
-		DestinationKeyPrefix: jsii.String(os.Getenv("JETS_s3_INPUT_PREFIX")),
-		Prune:                jsii.Bool(false),
-	})
+	// // Copy test files from workspace data folder to the bucket
+	// testFilesPath := fmt.Sprintf("%s/%s/data/test_data", os.Getenv("WORKSPACES_HOME"), os.Getenv("WORKSPACE"))
+	// s3deployment.NewBucketDeployment(stack, jsii.String("WorkspaceTestFilesDeployment"), &s3deployment.BucketDeploymentProps{
+	// 	Sources: &[]s3deployment.ISource{
+	// 		s3deployment.Source_Asset(jsii.String(testFilesPath), &awss3assets.AssetOptions{}),
+	// 	},
+	// 	DestinationBucket:    sourceBucket,
+	// 	DestinationKeyPrefix: jsii.String(os.Getenv("JETS_s3_INPUT_PREFIX")),
+	// 	Prune:                jsii.Bool(false),
+	// })
 
 	// Create a VPC to run tasks in.
 	// ----------------------------------------------------------------------------------------------
@@ -787,7 +787,7 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 	statusUpdateLambda.Connections().AllowTo(rdsCluster, awsec2.Port_Tcp(jsii.Number(5432)), jsii.String("Allow connection from StatusUpdateLambda"))
 	rdsSecret.GrantRead(statusUpdateLambda, nil)
 	// NOTE following added below due to dependency
-	// statusUpdateLambda.Connections().AllowTo(uiLoadBalancer, awsec2.Port_Tcp(&p), jsii.String("Allow connection from registerKeyLambda"))
+	// statusUpdateLambda.Connections().AllowTo(apiLoadBalancer, awsec2.Port_Tcp(&p), jsii.String("Allow connection from registerKeyLambda"))
 	// adminPwdSecret.GrantRead(statusUpdateLambda, nil)
 
 	// Run Reports ECS Task for reportsSM
@@ -1220,12 +1220,18 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 
 	// JETS_ELB_MODE == public: deploy ELB in public subnet and public facing
 	// JETS_ELB_MODE != public: (private or empty) deploy ELB in private subnet and not public facing
-	var uiLoadBalancer, serviceLoadBalancer awselb.ApplicationLoadBalancer
+	var uiLoadBalancer, serviceLoadBalancer, apiLoadBalancer awselb.ApplicationLoadBalancer
+	elbSubnetSelection := isolatedSubnetSelection
 	if os.Getenv("JETS_ELB_MODE") == "public" {
+		internetFacing := false
+		if os.Getenv("JETS_ELB_INTERNET_FACING") == "true" {
+			internetFacing = true
+			elbSubnetSelection = publicSubnetSelection
+		}
 		uiLoadBalancer = awselb.NewApplicationLoadBalancer(stack, jsii.String("UIELB"), &awselb.ApplicationLoadBalancerProps{
 			Vpc:            vpc,
-			InternetFacing: jsii.Bool(true),
-			VpcSubnets:     publicSubnetSelection,
+			InternetFacing: jsii.Bool(internetFacing),
+			VpcSubnets:      elbSubnetSelection,
 		})
 		if phiTagName != nil {
 			awscdk.Tags_Of(uiLoadBalancer).Add(phiTagName, jsii.String("true"), nil)
@@ -1250,6 +1256,7 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 		if descriptionTagName != nil {
 			awscdk.Tags_Of(serviceLoadBalancer).Add(descriptionTagName, jsii.String("Application Load Balancer for S3 notification listener lambda"), nil)
 		}
+		apiLoadBalancer = serviceLoadBalancer
 	} else {
 		uiLoadBalancer = awselb.NewApplicationLoadBalancer(stack, jsii.String("UIELB"), &awselb.ApplicationLoadBalancerProps{
 			Vpc:            vpc,
@@ -1265,6 +1272,7 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 		if descriptionTagName != nil {
 			awscdk.Tags_Of(uiLoadBalancer).Add(descriptionTagName, jsii.String("Application Load Balancer for JetStore Platform microservices and UI"), nil)
 		}
+		apiLoadBalancer = uiLoadBalancer
 	}
 	var err error
 	var uiPort float64 = 8080
@@ -1275,7 +1283,7 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 		}
 	}
 	var listener, serviceListener awselb.ApplicationListener
-	// When TLS is used, lambda function use a different port w/o tls protocol
+	// When TLS is used, lambda function use a different port w/o tls protocol via apiLoadBalancer
 	if os.Getenv("JETS_ELB_MODE") == "public" {
 		listener = uiLoadBalancer.AddListener(jsii.String("Listener"), &awselb.BaseApplicationListenerProps{
 			Port:     jsii.Number(uiPort),
@@ -1287,7 +1295,7 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 		})
 		serviceListener = serviceLoadBalancer.AddListener(jsii.String("ServiceListener"), &awselb.BaseApplicationListenerProps{
 			Port:     jsii.Number(uiPort + 1),
-			Open:     jsii.Bool(true),
+			Open:     jsii.Bool(false),
 			Protocol: awselb.ApplicationProtocol_HTTP,
 		})
 	} else {
@@ -1323,13 +1331,12 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 
 	// Connectivity info for lambda functions to apiserver
 	p := uiPort
-	s := uiLoadBalancer.LoadBalancerDnsName()
+	s := apiLoadBalancer.LoadBalancerDnsName()
 	if os.Getenv("JETS_ELB_MODE") == "public" {
 		p = uiPort + 1
-		s = serviceLoadBalancer.LoadBalancerDnsName()
 	}
 	jetsApiUrl := fmt.Sprintf("http://%s:%.0f", *s, p)
-	statusUpdateLambda.Connections().AllowTo(uiLoadBalancer, awsec2.Port_Tcp(&p), jsii.String("Allow connection from StatusUpdateLambda"))
+	statusUpdateLambda.Connections().AllowTo(apiLoadBalancer, awsec2.Port_Tcp(&p), jsii.String("Allow connection from StatusUpdateLambda"))
 	adminPwdSecret.GrantRead(statusUpdateLambda, nil)
 	statusUpdateLambda.AddEnvironment(
 		jsii.String("SYSTEM_PWD_SECRET"),
@@ -1412,7 +1419,7 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 		Vpc:        vpc,
 		VpcSubnets: isolatedSubnetSelection,
 	})
-	registerKeyLambda.Connections().AllowTo(uiLoadBalancer, awsec2.Port_Tcp(&p), jsii.String("Allow connection from registerKeyLambda"))
+	registerKeyLambda.Connections().AllowTo(apiLoadBalancer, awsec2.Port_Tcp(&p), jsii.String("Allow connection from registerKeyLambda"))
 	adminPwdSecret.GrantRead(registerKeyLambda, nil)
 	// END ALTERNATE with python lamdba fnc
 	if phiTagName != nil {
@@ -1459,7 +1466,8 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 // JETS_IMAGE_TAG (required)
 // JETS_UI_PORT (defaults 8080)
 // JETS_ELB_MODE (defaults private)
-// JETS_CERT_ARN (not required)
+// JETS_CERT_ARN (not required unless JETS_ELB_MODE==public)
+// JETS_ELB_INTERNET_FACING (not required unless JETS_ELB_MODE==public, values: true, false)
 // NBR_SHARDS (defaults to 1)
 // TASK_MAX_CONCURRENCY (defaults to 1)
 // JETS_BUCKET_NAME (optional, use existing bucket by name, create new bucket if empty)
@@ -1500,6 +1508,7 @@ func main() {
 	fmt.Println("env JETS_UI_PORT:", os.Getenv("JETS_UI_PORT"))
 	fmt.Println("env JETS_ELB_MODE:", os.Getenv("JETS_ELB_MODE"))
 	fmt.Println("env JETS_CERT_ARN:", os.Getenv("JETS_CERT_ARN"))
+	fmt.Println("env JETS_ELB_INTERNET_FACING:", os.Getenv("JETS_ELB_INTERNET_FACING"))
 	fmt.Println("env NBR_SHARDS:", os.Getenv("NBR_SHARDS"))
 	fmt.Println("env TASK_MAX_CONCURRENCY:", os.Getenv("TASK_MAX_CONCURRENCY"))
 	fmt.Println("env JETS_BUCKET_NAME:", os.Getenv("JETS_BUCKET_NAME"))
@@ -1539,6 +1548,16 @@ func main() {
 	if os.Getenv("JETS_ELB_MODE") == "public" && os.Getenv("JETS_CERT_ARN") == "" {
 		hasErr = true
 		errMsg = append(errMsg, "Env variable 'JETS_CERT_ARN' is required when 'JETS_ELB_MODE'==public.")
+	}
+	if os.Getenv("JETS_ELB_MODE") == "public" && os.Getenv("JETS_ELB_INTERNET_FACING") == "" {
+		hasErr = true
+		errMsg = append(errMsg, "Env variable 'JETS_ELB_INTERNET_FACING' is required when 'JETS_ELB_MODE'==public.")
+	}
+	if os.Getenv("JETS_ELB_INTERNET_FACING") != "" {
+		if os.Getenv("JETS_ELB_INTERNET_FACING") != "true" && os.Getenv("JETS_ELB_INTERNET_FACING") != "false" {
+			hasErr = true
+			errMsg = append(errMsg, "Env variable 'JETS_ELB_INTERNET_FACING' must have value 'true' or 'false' (no quotes)")
+		}
 	}
 	if os.Getenv("JETS_s3_INPUT_PREFIX") == "" || os.Getenv("JETS_s3_OUTPUT_PREFIX") == "" {
 		hasErr = true

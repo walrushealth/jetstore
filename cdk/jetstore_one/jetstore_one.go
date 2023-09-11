@@ -218,7 +218,7 @@ func AddRdsAlarms(stack awscdk.Stack, rds awsrds.DatabaseCluster,
 func mkCatchProps() *sfn.CatchProps {
 	return &sfn.CatchProps{
 		Errors:       jsii.Strings("States.ALL"),
-		ResultPath:   sfn.JsonPath_DISCARD(),
+		ResultPath:   jsii.String("$.errorUpdate.failureDetails"),
 	}
 }
 
@@ -849,7 +849,7 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *JetstoreO
 	reportsSM := sfn.NewStateMachine(stack, jsii.String("reportsSM"), &sfn.StateMachineProps{
 		StateMachineName: jsii.String("reportsSM"),
 		Definition:       runReportsTask,
-		Timeout:          awscdk.Duration_Hours(jsii.Number(2)),
+		Timeout:          awscdk.Duration_Hours(jsii.Number(4)),
 	})
 	if phiTagName != nil {
 		awscdk.Tags_Of(reportsSM).Add(phiTagName, jsii.String("true"), nil)

@@ -42,8 +42,6 @@ import (
 // NBR_SHARDS set the nbr of shard to use for loader and server
 // WEB_APP_DEPLOYMENT_DIR
 // WORKSPACE Workspace currently in use
-// WORKSPACE_DB_PATH location of workspace db (sqlite db)
-// WORKSPACE_LOOKUPS_DB_PATH location of lookup db (sqlite db)
 // WORKSPACES_HOME Home dir of workspaces
 // JETS_BUCKET (required for SyncFileKeys)
 // JETS_s3_INPUT_PREFIX Input file key prefix
@@ -52,6 +50,7 @@ import (
 // JETS_DOMAIN_KEY_HASH_SEED (required for md5 and sha1. MUST be a valid uuid )
 // JETS_RESET_DOMAIN_TABLE_ON_STARTUP (value: yes, will reset the domain table, run workspace db init script, and upgrade system tables if database version is less than build version)
 // JETS_DOMAIN_KEY_SEPARATOR 
+// JETS_SCHEMA_FILE location of jetstore db schema file
 
 var awsDsnSecret       = flag.String("awsDsnSecret", "", "aws secret with dsn definition (aws integration) (required unless -dsn is provided)")
 var awsApiSecret       = flag.String("awsApiSecret", "", "aws secret with string to use for signing jwt tokens (aws integration) (required unless -dsn is provided)")
@@ -67,7 +66,7 @@ var uiWebDir           = flag.String("WEB_APP_DEPLOYMENT_DIR", "/usr/local/lib/w
 var adminEmail         = flag.String("adminEmail", "admin", "Admin email, may not be an actual email (default is admin)")
 var awsAdminPwdSecret  = flag.String("awsAdminPwdSecret", "", "aws secret with Admin password as string (aws integration) (required unless -adminPwd is provided)")
 var adminPwd           = flag.String("adminPwd", "", "Admin password (required unless -awsAdminPwdSecret is provided)")
-var devMode bool
+var globalDevMode bool
 var nbrShards int
 
 func main() {
@@ -160,8 +159,8 @@ func main() {
 		errMsg = append(errMsg, "Env var WORKSPACES_HOME, and WORKSPACE are required.")
 	}
 
-	_, devMode = os.LookupEnv("JETSTORE_DEV_MODE")
-	if devMode {
+	_, globalDevMode = os.LookupEnv("JETSTORE_DEV_MODE")
+	if globalDevMode {
 		if strings.HasPrefix(*unitTestDir, ".") {
 			v1, ok := os.LookupEnv("WORKSPACES_HOME")
 				if ok {
@@ -200,7 +199,7 @@ func main() {
 	fmt.Println("Got argument: awsAdminPwdSecret",*awsAdminPwdSecret)
 	fmt.Println("Got argument: adminPwd len", len(*adminPwd))
 	fmt.Println("Got argument: WEB_APP_DEPLOYMENT_DIR",*uiWebDir)
-	if devMode {
+	if globalDevMode {
 		fmt.Println("Running in DEV MODE")
 		if len(*unitTestDir) > 0 {
 			fmt.Println("Running in DEV MODE with unitTestDir", *unitTestDir)
@@ -209,8 +208,6 @@ func main() {
 	}
 	fmt.Println("ENV WORKSPACES_HOME:",os.Getenv("WORKSPACES_HOME"))
 	fmt.Println("ENV WORKSPACE:",os.Getenv("WORKSPACE"))
-	fmt.Println("ENV WORKSPACE_DB_PATH:",os.Getenv("WORKSPACE_DB_PATH"))
-	fmt.Println("ENV WORKSPACE_LOOKUPS_DB_PATH:",os.Getenv("WORKSPACE_LOOKUPS_DB_PATH"))
 	fmt.Println("ENV JETS_s3_INPUT_PREFIX:",os.Getenv("JETS_s3_INPUT_PREFIX"))
 	fmt.Println("ENV JETS_s3_OUTPUT_PREFIX:",os.Getenv("JETS_s3_OUTPUT_PREFIX"))
 	fmt.Println("ENV JETS_VERSION:",os.Getenv("JETS_VERSION"))

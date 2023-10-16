@@ -148,6 +148,20 @@ class JetsDataTableWidget extends FormField<WidgetField> {
                         child: Text(ac.label),
                       )
                     ]));
+            // Second row of buttons
+            final secondRow = <Widget>[];
+            secondRow.addAll(tableConfig.secondRowActions
+                .where((ac) => ac.isVisible(state))
+                .expand((ac) => [
+                      const SizedBox(width: defaultPadding),
+                      ElevatedButton(
+                        style: buttonStyle(ac.style, themeData),
+                        onPressed: ac.isEnabled(state)
+                            ? () => state.actionDispatcher(context, ac)
+                            : null,
+                        child: Text(ac.label),
+                      )
+                    ]));
 
             // build the data table
             return Column(
@@ -168,6 +182,8 @@ class JetsDataTableWidget extends FormField<WidgetField> {
                       children: [
                         // HEADER ROW
                         if (headerRow.isNotEmpty) Row(children: headerRow),
+                        if (secondRow.isNotEmpty) const SizedBox(height: defaultPadding),
+                        if (secondRow.isNotEmpty) Row(children: secondRow),
                         // MAIN TABLE SECTION
                         const SizedBox(height: defaultPadding),
                         Expanded(
@@ -454,6 +470,14 @@ class JetsDataTableState extends FormFieldState<WidgetField> {
           showAlertDialog(context, msg);
         }
         break;
+      case DTActionResult.statusErrorRefreshTable:
+        var msg = dialogFormState.getValue(0, FSK.serverError);
+        if (msg != null) {
+          showAlertDialog(context, msg);
+        }
+        // refresh the data table
+        dataSource.getModelData();
+        break;
       default:
       // case null
     }
@@ -478,29 +502,25 @@ class JetsDataTableState extends FormFieldState<WidgetField> {
 
         // Need to use navigationParams for formState-less form (e.g. ScreenOne)
         // and stateFormNavigationParams for when having formState
-        //* TODO consider adding formState to ScreenOne
-        //       Add defaultValue to stateFormNavigationParams
+        // Add defaultValue to stateFormNavigationParams
         // add state information to dialogFormState if navigationParams exists
-        if (ac.stateFormNavigationParams != null) {
-          ac.stateFormNavigationParams?.forEach((key, npKey) {
-            var value = formState?.getValue(0, npKey);
-            if (value is List<String>) {
-              dialogFormState.setValue(0, key, value[0]);
-            } else {
-              dialogFormState.setValue(0, key, value);
+        ac.stateFormNavigationParams?.forEach((key, npKey) {
+          var value = formState?.getValue(0, npKey);
+          if (value is List<String>) {
+            dialogFormState.setValue(0, key, value[0]);
+          } else {
+            dialogFormState.setValue(0, key, value);
+          }
+        });
+        ac.navigationParams?.forEach((key, value) {
+          if (value is String?) {
+            dialogFormState.setValue(0, key, value);
+          } else {
+            if (row != null && value is int) {
+              dialogFormState.setValue(0, key, row[value]);
             }
-          });
-        } else {
-          ac.navigationParams?.forEach((key, value) {
-            if (value is String?) {
-              dialogFormState.setValue(0, key, value);
-            } else {
-              if (row != null && value is int) {
-                dialogFormState.setValue(0, key, row[value]);
-              }
-            }
-          });
-        }
+          }
+        });
         // reset the updated keys since these updates is to put default values
         // and is not from user interactions
         dialogFormState.resetUpdatedKeys(0);

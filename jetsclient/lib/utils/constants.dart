@@ -2,9 +2,17 @@ import 'package:flutter/material.dart';
 
 const defaultPadding = 16.0;
 const betweenTheButtonsPadding = 8.0;
+var globalWorkspaceUri = '';
 
 /// Button action style, used by both JetsDataTable and JetsForm
-enum ActionStyle { primary, secondary, alternate, menuSelected, menuAlternate, danger }
+enum ActionStyle {
+  primary,
+  secondary,
+  alternate,
+  menuSelected,
+  menuAlternate,
+  danger
+}
 
 ButtonStyle? buttonStyle(ActionStyle style, ThemeData td) {
   switch (style) {
@@ -121,6 +129,13 @@ class FormKeys {
   static const workspaceRegistry = "workspaceRegistry";
   static const workspaceHome = "workspaceHome";
   static const addWorkspace = "addWorkspace";
+  static const commitWorkspace = "commitWorkspaceDialog";
+  static const pullWorkspace = "pullWorkspaceDialog";
+  static const pushOnlyWorkspace = "pushOnlyWorkspaceDialog";
+  static const doGitCommandWorkspace = "doGitCommandWorkspaceDialog";
+  static const viewGitLogWorkspace = "viewGitLogWorkspaceDialog";
+  static const exportWorkspaceClientConfig = "exportWorkspaceClientConfig";
+  static const addWorkspaceFile = "addWorkspaceFileDialog";
   // Forms for each section of the workspace, incl file editor
   // Note: The formConfig key is constructed in initializeWorkspaceFileEditor
   static const workspaceFileEditor = "workspace.file.form";
@@ -139,6 +154,9 @@ class FSK {
   static const label = "label";
   static const tableName = "table_name";
   static const fileKey = "file_key";
+
+  static const dataTableAction = "datatable.action";
+  static const dataTableFromTable = "datatable.from.table";
 
   static const userEmail = "user_email";
   static const userName = "name";
@@ -231,13 +249,25 @@ class FSK {
 
   // Form Keys for Workspace IDE
   static const wsName = "workspace_name";
+  static const wsPreviousName = "previous.workspace_name";
   static const wsURI = "workspace_uri";
   static const wsFileName = "file_name";
   static const wsFileEditorContent = "file_content";
   static const wsOid = "oid";
+  static const lastGitLog = "last_git_log";
+  static const gitUser = "git.user";
+  static const gitToken = "git.token";
+  static const gitCommitMessage = "git.commit.message";
+  static const gitUserEmail = "git.user.email";
+  static const gitUserName = "git.user.name";
+  static const gitCommand = "git.command";
   // matching menuItem and current page (virtual page)
   static const pageMatchKey = "pageMatchKey";
+  // Virtual workspace key
+  static const wsSection = "workspace.section";  //data_model, jet_rules, etc.
 
+  // workspace.db columns
+  static const wsDbSourceFileName = "source_file_name";
 
   // reserved keys for cache
 
@@ -272,7 +302,8 @@ class FSK {
 
   // entityRdfTypeRegistryCache: cache value is a List<String?>
   // provides list of entity_rdf_type
-  static const entityRdfTypeRegistryCache = "cache.dropdown_items.entity_rdf_type";
+  static const entityRdfTypeRegistryCache =
+      "cache.dropdown_items.entity_rdf_type";
 
   // processConfigCache: cache value is a list<list<String?>> (model)
   // from table process_config provides [key, process_name]
@@ -318,7 +349,6 @@ class ActionKeys {
   static const queryToolOk = "queryTool.ok";
   static const queryToolDdlOk = "queryTool.ddl.ok";
 
-
   // for add process input dialog
   static const addProcessInputOk = "addProcessInputOk";
   // for process mapping dialog
@@ -346,11 +376,20 @@ class ActionKeys {
 
   // Workspace IDE ActionKeys
   static const addWorkspaceOk = "addWorkspaceOk";
-  static const compileWorkspace = "compileWorkspace";
   static const openWorkspace = "openWorkspace";
+  static const compileWorkspace = "compileWorkspace";
+  static const commitWorkspaceOk = "commitWorkspaceOk";
+  static const pushOnlyWorkspaceOk = "pushOnlyWorkspaceOk";
+  static const pullWorkspaceOk = "pullWorkspaceOk";
+  static const doGitCommandWorkspaceOk = "doGitCommandWorkspaceOk";
   static const wsSaveFileOk = "wsSaveFileOk";
+  static const loadWorkspaceConfig = "loadWorkspaceConfig";
+  static const deleteWorkspace = "deleteWorkspace";
   static const deleteWorkspaceChanges = "deleteWorkspaceChanges";
   static const deleteAllWorkspaceChanges = "deleteAllWorkspaceChanges";
+  static const exportClientConfigOk = "exportClientConfigOk";
+  static const addWorkspaceFilesOk = "addWorkspaceFilesOk";
+  static const deleteWorkspaceFiles = "deleteWorkspaceFiles";
 }
 
 /// Form Action Keys
@@ -418,16 +457,18 @@ class DTKeys {
   // Workspace IDE DT
   static const workspaceRegistryTable = "workspaceRegistryTable";
   static const workspaceChangesTable = "workspaceChangesTable";
-  
+
   // Workspace - Data Model Tables
   static const wsDomainTableTable = "wsDomainTableTable";
   static const wsDomainClassTable = "wsDomainClassTable";
   static const wsDataPropertyTable = "wsDataPropertyTable";
+  static const wsDataModelFilesTable = "wsDataModelFilesTable";
 
   // Workspace - Jet Rules Tables
   static const wsJetRulesTable = "wsJetRulesTable";
   static const wsRuleTermsTable = "wsRuleTermsTable";
   static const wsMainSupportFilesTable = "wsMainSupportFilesTable";
+  static const wsJetRulesFilesTable = "wsJetRulesFilesTable";
 
   static const wsLookupsTable = "wsLookupsTable";
 }

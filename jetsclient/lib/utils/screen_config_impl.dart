@@ -43,11 +43,11 @@ final defaultMenuEntries = [
   //     key: 'dataPurge',
   //     label: 'Purge Client Data',
   //     menuAction: purgeDataAction),
-  MenuEntry(
-      otherPageStyle: ActionStyle.danger,
-      key: 'runInitDb',
-      label: 'Run Workspace Database Initialization',
-      menuAction: rerunDbInitAction),
+  // MenuEntry(
+  //     otherPageStyle: ActionStyle.danger,
+  //     key: 'runInitDb',
+  //     label: 'Run Workspace Database Initialization',
+  //     menuAction: rerunDbInitAction),
 ];
 
 final adminMenuEntries = [
@@ -259,7 +259,7 @@ final Map<String, ScreenConfig> _screenConfigurations = {
   ScreenKeys.execStatusDetailsTable: ScreenConfig(
       key: ScreenKeys.execStatusDetailsTable,
       appBarLabel: 'JetStore Workspace',
-      title: 'Pipeline Execution Details',
+      // title: 'Pipeline Execution Details',
       showLogout: true,
       leftBarLogo: 'assets/images/logo.png',
       menuEntries: defaultMenuEntries,
@@ -268,7 +268,7 @@ final Map<String, ScreenConfig> _screenConfigurations = {
   ScreenKeys.processErrorsTable: ScreenConfig(
       key: ScreenKeys.processErrorsTable,
       appBarLabel: 'JetStore Workspace',
-      title: 'Pipeline Execution Errors',
+      // title: 'Pipeline Execution Errors',
       showLogout: true,
       leftBarLogo: 'assets/images/logo.png',
       menuEntries: defaultMenuEntries,

@@ -89,7 +89,7 @@ func (ca *CommandArguments)RunReports(dbpool *pgxpool.Pool) (err error) {
 		}
 
 		version := strconv.FormatInt(time.Now().Unix(), 10)
-		err = workspace.CompileWorkspace(dbpool, ca.WorkspaceName, version)
+		_, err = workspace.CompileWorkspace(dbpool, ca.WorkspaceName, version)
 		if err != nil {
 			return err
 		}
@@ -238,7 +238,7 @@ func (ca *CommandArguments)DoReport(dbpool *pgxpool.Pool, outputFileName *string
 		for inPos := range fd {
 			oid := fd[inPos].DataTypeOID
 			columName := string(fd[inPos].Name)
-			fmt.Println("*** ColumnName",columName,"oid",oid)
+			// fmt.Println("*** ColumnName",columName,"oid",oid)
 			// skipping arrays and unknown data type
 			if !dbutils.IsArrayFromOID(oid) {
 				switch datatype := dbutils.DataTypeFromOID(oid); datatype {

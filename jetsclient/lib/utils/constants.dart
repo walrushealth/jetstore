@@ -72,6 +72,7 @@ class ScreenKeys {
   static const login = "loginScreen";
   static const register = "registerScreen";
   static const userAdmin = "userAdminScreen";
+  static const userGitProfile = "userGitProfileScreen";
 
   static const fileRegistryTable = "fileRegistryTableScreen";
   static const filePreview = "filePreviewScreen";
@@ -117,6 +118,7 @@ class FormKeys {
   static const viewProcessErrors = "viewProcessErrorsForm";
   static const viewInputRecords = "viewInputRecordsDialog";
   static const viewReteTriples = "viewReteTriplesDialog";
+  static const viewReteTriplesV2 = "viewReteTriplesDialogV2";
   // Query Tool Forms
   static const queryToolInputForm = "queryToolInputForm";
   static const queryToolResultViewForm = "queryToolResultViewForm";
@@ -124,6 +126,7 @@ class FormKeys {
   static const login = "login";
   static const register = "register";
   static const userAdmin = "userAdmin";
+  static const userGitProfile = "userGitProfile";
 
   // Workspace IDE forms
   static const workspaceRegistry = "workspaceRegistry";
@@ -133,6 +136,7 @@ class FormKeys {
   static const pullWorkspace = "pullWorkspaceDialog";
   static const pushOnlyWorkspace = "pushOnlyWorkspaceDialog";
   static const doGitCommandWorkspace = "doGitCommandWorkspaceDialog";
+  static const doGitStatusWorkspace = "doGitStatusWorkspaceDialog";
   static const viewGitLogWorkspace = "viewGitLogWorkspaceDialog";
   static const exportWorkspaceClientConfig = "exportWorkspaceClientConfig";
   static const addWorkspaceFile = "addWorkspaceFileDialog";
@@ -167,6 +171,12 @@ class FSK {
   static const isAdmin = "is_admin";
   static const isActive = "is_active";
 
+  static const gitName = "git_name";
+  static const gitEmail = "git_email";
+  static const gitHandle = "git_handle";
+  static const gitToken = "git_token";
+  static const gitTokenConfirm = "git_token.confirm";
+
   static const client = "client";
   static const org = "org";
   static const sourcePeriodKey = "source_period_key";
@@ -184,6 +194,10 @@ class FSK {
   static const inputColumnsPositionsCsv = "input_columns_positions_csv";
   static const codeValuesMappingJson = "code_values_mapping_json";
   static const entityRdfType = "entity_rdf_type";
+  static const entityKey = "entity_key";
+  static const entityProperty = "entity_property";
+  static const entityPropertyValue = "entity_property_value";
+  static const entityPropertyValueType = "entity_property_value_type";
   static const status = "status";
   static const rawRows = "raw_rows";
 
@@ -191,7 +205,11 @@ class FSK {
   static const domainKey = "domain_key";
   static const domainKeyColumn =
       "domainKeyColumn"; // e.g. Eligibility:domain_key
-  static const reteSessionTriples = "rete_session_triples";
+  static const reteSessionTriples = "rete_session.triples";
+  static const reteSessionRdfTypes = "rete_session.rdf_types";
+  static const reteSessionEntityKeyByType = "rete_session.entity_key_by_type";
+  static const reteSessionEntityDetailsByKey =
+      "rete_session.entity_details_by_key";
 
   // Query Tool
   static const rawQuery = "raw_query";
@@ -255,16 +273,12 @@ class FSK {
   static const wsFileEditorContent = "file_content";
   static const wsOid = "oid";
   static const lastGitLog = "last_git_log";
-  static const gitUser = "git.user";
-  static const gitToken = "git.token";
   static const gitCommitMessage = "git.commit.message";
-  static const gitUserEmail = "git.user.email";
-  static const gitUserName = "git.user.name";
   static const gitCommand = "git.command";
   // matching menuItem and current page (virtual page)
   static const pageMatchKey = "pageMatchKey";
   // Virtual workspace key
-  static const wsSection = "workspace.section";  //data_model, jet_rules, etc.
+  static const wsSection = "workspace.section"; //data_model, jet_rules, etc.
 
   // workspace.db columns
   static const wsDbSourceFileName = "source_file_name";
@@ -325,6 +339,7 @@ class ActionKeys {
   static const dialogCancel = "dialog.cancelAction";
   static const toggleUserActive = "toggleUserActive";
   static const deleteUser = "deleteUser";
+  static const submitGitProfileOk = "submitGitProfileOk";
 
   // for Client & Org Admin dialog
   static const clientOk = "client.ok";
@@ -372,7 +387,9 @@ class ActionKeys {
 
   // for process_error data table
   static const setupShowInputRecords = "setupShowInputRecords";
-  static const setupShowReteTriples = "setupShowReteTriples";
+  static const setupShowReteTriples = "reteSession.setupTriples";
+  static const setupShowReteTriplesV2 = "reteSession.setupModelV2";
+  static const reteSessionVisitEntity = "reteSession.VisitEntity";
 
   // Workspace IDE ActionKeys
   static const addWorkspaceOk = "addWorkspaceOk";
@@ -381,6 +398,7 @@ class ActionKeys {
   static const commitWorkspaceOk = "commitWorkspaceOk";
   static const pushOnlyWorkspaceOk = "pushOnlyWorkspaceOk";
   static const pullWorkspaceOk = "pullWorkspaceOk";
+  static const doGitStatusWorkspaceOk = "doGitStatusWorkspaceOk";
   static const doGitCommandWorkspaceOk = "doGitCommandWorkspaceOk";
   static const wsSaveFileOk = "wsSaveFileOk";
   static const loadWorkspaceConfig = "loadWorkspaceConfig";
@@ -410,7 +428,12 @@ class DTKeys {
   static const pipelineExecStatusTable = "pipelineExecStatusTable";
   static const pipelineExecDetailsTable = "pipelineExecDetailsTable";
   static const processErrorsTable = "processErrorsTable";
+  // View rete session triples v1
   static const reteSessionTriplesTable = "reteSessionTriplesTable";
+  // View rete session v2 - rete session explorer
+  static const reteSessionRdfTypeTable = "reteSessionRdfTypeTable";
+  static const reteSessionEntityKeyTable = "reteSessionEntityKeyTable";
+  static const reteSessionEntityDetailsTable = "reteSessionEntityDetailsTable";
   static const inputRecordsFromProcessErrorTable =
       "inputRecordsFromProcessErrorTable";
 

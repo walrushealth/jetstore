@@ -148,6 +148,82 @@ final Map<String, FormConfig> _formConfigurations = {
     formValidatorDelegate: registrationFormValidator,
     formActionsDelegate: registrationFormActions,
   ),
+  // User Git Profile Form
+  FormKeys.userGitProfile: FormConfig(
+    key: FormKeys.userGitProfile,
+    useListView: true,
+    actions: [
+      FormActionConfig(
+          key: ActionKeys.submitGitProfileOk,
+          label: "Submit",
+          buttonStyle: ActionStyle.primary,
+          leftMargin: defaultPadding,
+          rightMargin: defaultPadding),
+    ],
+    inputFields: [
+      [
+        FormInputFieldConfig(
+            key: FSK.gitName,
+            label: "Name",
+            hint: "Enter your name for git commits",
+            flex: 1,
+            autofocus: true,
+            obscureText: false,
+            textRestriction: TextRestriction.none,
+            maxLength: 80,
+            useDefaultFont: true),
+        FormInputFieldConfig(
+            key: FSK.gitHandle,
+            label: "Git Handle",
+            hint: "Your git handle (user name) for git commit",
+            flex: 1,
+            autofocus: false,
+            obscureText: false,
+            textRestriction: TextRestriction.allLower,
+            maxLength: 60,
+            useDefaultFont: true),
+      ],
+      [
+        FormInputFieldConfig(
+            key: FSK.gitEmail,
+            label: "Email",
+            hint: "Your email address for git commit",
+            flex: 1,
+            autofocus: false,
+            autofillHints: [AutofillHints.email],
+            obscureText: false,
+            textRestriction: TextRestriction.allLower,
+            maxLength: 80,
+            useDefaultFont: true),
+      ],
+      [
+        FormInputFieldConfig(
+            key: FSK.gitToken,
+            label: "Github Token",
+            hint: "Github token to use as password",
+            flex: 1,
+            autofocus: false,
+            obscureText: true,
+            textRestriction: TextRestriction.none,
+            maxLength: 120,
+            useDefaultFont: true),
+      ],
+      [
+        FormInputFieldConfig(
+            key: FSK.gitTokenConfirm,
+            label: "Github Token Confirmation",
+            hint: "Re-enter your github token",
+            flex: 1,
+            autofocus: false,
+            obscureText: true,
+            textRestriction: TextRestriction.none,
+            maxLength: 120,
+            useDefaultFont: true),
+      ],
+    ],
+    formValidatorDelegate: gitProfileFormValidator,
+    formActionsDelegate: gitProfileFormActions,
+  ),
   // User Administration Form (actionless -- user table has the actions)
   FormKeys.userAdmin: FormConfig(
     key: FormKeys.userAdmin,
@@ -189,6 +265,7 @@ final Map<String, FormConfig> _formConfigurations = {
   FormKeys.addClient: FormConfig(
     key: FormKeys.addClient,
     title: "Add Client",
+    useListView: true,
     actions: [
       FormActionConfig(
           key: ActionKeys.clientOk,
@@ -237,6 +314,7 @@ final Map<String, FormConfig> _formConfigurations = {
   FormKeys.addOrg: FormConfig(
     key: FormKeys.addOrg,
     title: "Add Organization",
+    useListView: true,
     actions: [
       FormActionConfig(
           key: ActionKeys.orgOk,
@@ -856,6 +934,7 @@ final Map<String, FormConfig> _formConfigurations = {
               DropdownItemConfig(label: 'Select a Client'),
             ],
             autovalidateMode: AutovalidateMode.onUserInteraction,
+            makeReadOnlyWhenHasSelectedValue: true,
             dropdownItemsQuery:
                 "SELECT client FROM jetsapi.client_registry ORDER BY client ASC LIMIT 150"),
         FormDropdownFieldConfig(
@@ -865,6 +944,7 @@ final Map<String, FormConfig> _formConfigurations = {
               DropdownItemConfig(label: 'Select a process'),
             ],
             autovalidateMode: AutovalidateMode.onUserInteraction,
+            makeReadOnlyWhenHasSelectedValue: true,
             dropdownItemsQuery:
                 "SELECT process_name, key FROM jetsapi.process_config ORDER BY process_name ASC LIMIT 100"),
       ],
@@ -1449,17 +1529,41 @@ final Map<String, FormConfig> _formConfigurations = {
             key: DTKeys.reteSessionTriplesTable,
             dataTableConfig: DTKeys.reteSessionTriplesTable,
             tableHeight: 1000)
+      ],
+    ],
+    formValidatorDelegate: (formState, p2, p3, p4) => null,
+    formActionsDelegate: processErrorsActions,
+  ),
 
-        // FormInputFieldConfig(
-        //     key: FSK.reteSessionTriples,
-        //     label: "Rete Triples",
-        //     hint: "Rete session saved as triples",
-        //     flex: 1,
-        //     autofocus: false,
-        //     obscureText: false,
-        //     textRestriction: TextRestriction.none,
-        //     maxLines: 50,
-        //     maxLength: 2097152),
+  FormKeys.viewReteTriplesV2: FormConfig(
+    key: FormKeys.viewReteTriplesV2,
+    title: "Rete Session Explorer",
+    actions: [
+      FormActionConfig(
+          key: ActionKeys.dialogCancel,
+          label: "Close",
+          buttonStyle: ActionStyle.primary,
+          leftMargin: betweenTheButtonsPadding,
+          rightMargin: defaultPadding,
+          bottomMargin: defaultPadding),
+    ],
+    inputFields: [
+      [
+        FormDataTableFieldConfig(
+            key: DTKeys.reteSessionRdfTypeTable,
+            flex: 1,
+            dataTableConfig: DTKeys.reteSessionRdfTypeTable,
+            tableHeight: double.infinity),
+        FormDataTableFieldConfig(
+            key: DTKeys.reteSessionEntityKeyTable,
+            flex: 1,
+            dataTableConfig: DTKeys.reteSessionEntityKeyTable,
+            tableHeight: double.infinity),
+        FormDataTableFieldConfig(
+            key: DTKeys.reteSessionEntityDetailsTable,
+            flex: 2,
+            dataTableConfig: DTKeys.reteSessionEntityDetailsTable,
+            tableHeight: double.infinity),
       ],
     ],
     formValidatorDelegate: (formState, p2, p3, p4) => null,

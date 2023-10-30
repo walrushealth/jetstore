@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -101,6 +102,7 @@ func doJob() (pipelineResult *PipelineResult, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("recovered error: %v", r)
+			debug.PrintStack()
 		}
 	}()
 
@@ -157,7 +159,7 @@ func doJobAndReportStatus() error {
 	var err error
 	if *awsDsnSecret != "" {
 		// Get the dsn from the aws secret
-		*dsnList, err = awsi.GetDsnFromSecret(*awsDsnSecret, *awsRegion, *usingSshTunnel, *dbPoolSize)
+		*dsnList, err = awsi.GetDsnFromSecret(*awsDsnSecret, *usingSshTunnel, *dbPoolSize)
 		if err != nil {
 			return fmt.Errorf("while getting dsn from aws secret: %v", err)
 		}

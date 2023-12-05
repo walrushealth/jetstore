@@ -22,6 +22,7 @@ import (
 	// "time"
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
+	"github.com/artisoft-io/jetstore/jets/datatable/jcsv"
 	"github.com/artisoft-io/jetstore/jets/dbutils"
 	"github.com/artisoft-io/jetstore/jets/schema"
 	"github.com/artisoft-io/jetstore/jets/user"
@@ -90,11 +91,13 @@ type WithClause struct {
 	Stmt string `json:"stmt"`
 }
 type WhereClause struct {
-	Table    string   `json:"table"`
-	Column   string   `json:"column"`
-	Values   []string `json:"values"`
-	JoinWith string   `json:"joinWith"`
-	Like     string   `json:"like"`
+	Table    string          `json:"table"`
+	Column   string          `json:"column"`
+	Values   []string        `json:"values"`
+	JoinWith string          `json:"joinWith"`
+	Like     string          `json:"like"`
+	// Adding a simple or clause
+	OrWith   *WhereClause    `json:"orWith"`
 }
 
 // DataTableColumnDef used when returning the column definition
@@ -179,7 +182,7 @@ func (dtq *DataTableAction) getColumnsDefinitions(dbpool *pgxpool.Pool) ([]DataT
 	//* TODO use cache
 	tableSchema, err := schema.GetTableSchema(dbpool, dtq.FromClauses[0].Schema, dtq.FromClauses[0].Table)
 	if err != nil {
-		return nil, fmt.Errorf("While schema.GetTableSchema for %s.%s: %v", dtq.FromClauses[0].Schema, dtq.FromClauses[0].Table, err)
+		return nil, fmt.Errorf("while schema.GetTableSchema for %s.%s: %v", dtq.FromClauses[0].Schema, dtq.FromClauses[0].Table, err)
 	}
 	columnsDef = make([]DataTableColumnDef, 0, len(tableSchema.Columns))
 	for _, colDef := range tableSchema.Columns {
@@ -289,6 +292,72 @@ func (dtq *DataTableAction) makeWithClause() string {
 	return buf.String()
 }
 
+func visitWhereClause(buf *strings.Builder, wc *WhereClause) {
+	if wc.OrWith != nil {
+		buf.WriteString("( ")
+	}
+	if wc.Table != "" {
+		buf.WriteString(pgx.Identifier{wc.Table, wc.Column}.Sanitize())
+	} else {
+		buf.WriteString(pgx.Identifier{wc.Column}.Sanitize())
+	}
+	nvalues := len(wc.Values)
+	// Check if value contains an pg array encoded into a string
+	if nvalues == 1 {
+		if wc.Values[0] == "{}" {
+			wc.Values[0] = "NULL"
+		} else {
+			v := wc.Values[0]
+			if strings.HasPrefix(v, "{") && strings.HasSuffix(v, "}") {
+				wc.Values = strings.Split(v[1:len(v)-1], ",")
+				nvalues = len(wc.Values)
+			}
+		}
+	}
+	switch {
+	case len(wc.Like) > 0:
+		buf.WriteString(" LIKE ")
+		buf.WriteString("'")
+		buf.WriteString(wc.Like)
+		buf.WriteString("' ")
+	case len(wc.JoinWith) > 0:
+		buf.WriteString(" = ")
+		buf.WriteString(wc.JoinWith)
+	case nvalues > 1:
+		buf.WriteString(" IN (")
+		isFirstValue := true
+		for j := range wc.Values {
+			if !isFirstValue {
+				buf.WriteString(", ")
+			}
+			isFirstValue = false
+			value := wc.Values[j]
+			if value == "NULL" {
+				buf.WriteString(" NULL ")
+			} else {
+				buf.WriteString("'")
+				buf.WriteString(value)
+				buf.WriteString("'")
+			}
+		}
+		buf.WriteString(") ")
+	default:
+		value := wc.Values[0]
+		if value == "NULL" {
+			buf.WriteString(" is NULL ")
+		} else {
+			buf.WriteString(" = '")
+			buf.WriteString(value)
+			buf.WriteString("'")
+		}
+	}
+	if wc.OrWith != nil {
+		buf.WriteString(" OR ")
+		visitWhereClause(buf, wc.OrWith)
+		buf.WriteString(" )")
+	}
+}
+
 func (dtq *DataTableAction) makeWhereClause() string {
 	if len(dtq.WhereClauses) == 0 {
 		return ""
@@ -301,61 +370,7 @@ func (dtq *DataTableAction) makeWhereClause() string {
 			buf.WriteString(" AND ")
 		}
 		isFirst = false
-		if dtq.WhereClauses[i].Table != "" {
-			buf.WriteString(pgx.Identifier{dtq.WhereClauses[i].Table, dtq.WhereClauses[i].Column}.Sanitize())
-		} else {
-			buf.WriteString(pgx.Identifier{dtq.WhereClauses[i].Column}.Sanitize())
-		}
-		nvalues := len(dtq.WhereClauses[i].Values)
-		// Check if value contains an pg array encoded into a string
-		if nvalues == 1 {
-			if dtq.WhereClauses[i].Values[0] == "{}" {
-				dtq.WhereClauses[i].Values[0] = "NULL"
-			} else {
-				v := dtq.WhereClauses[i].Values[0]
-				if strings.HasPrefix(v, "{") && strings.HasSuffix(v, "}") {
-					dtq.WhereClauses[i].Values = strings.Split(v[1:len(v)-1], ",")
-					nvalues = len(dtq.WhereClauses[i].Values)
-				}
-			}
-		}
-		switch {
-		case len(dtq.WhereClauses[i].Like) > 0:
-			buf.WriteString(" like ")
-			buf.WriteString("'")
-			buf.WriteString(dtq.WhereClauses[i].Like)
-			buf.WriteString("' ")
-		case len(dtq.WhereClauses[i].JoinWith) > 0:
-			buf.WriteString(" = ")
-			buf.WriteString(dtq.WhereClauses[i].JoinWith)
-		case nvalues > 1:
-			buf.WriteString(" IN (")
-			isFirstValue := true
-			for j := range dtq.WhereClauses[i].Values {
-				if !isFirstValue {
-					buf.WriteString(", ")
-				}
-				isFirstValue = false
-				value := dtq.WhereClauses[i].Values[j]
-				if value == "NULL" {
-					buf.WriteString(" NULL ")
-				} else {
-					buf.WriteString("'")
-					buf.WriteString(value)
-					buf.WriteString("'")
-				}
-			}
-			buf.WriteString(") ")
-		default:
-			value := dtq.WhereClauses[i].Values[0]
-			if value == "NULL" {
-				buf.WriteString(" is NULL ")
-			} else {
-				buf.WriteString(" = '")
-				buf.WriteString(value)
-				buf.WriteString("'")
-			}
-		}
+		visitWhereClause(&buf, &dtq.WhereClauses[i])
 	}
 	return buf.String()
 }
@@ -476,48 +491,6 @@ func (ctx *Context) ExecRawQueryMap(dataTableAction *DataTableAction, token stri
 	return
 }
 
-type Chartype rune
-
-// Single character type for csv options
-func (s *Chartype) String() string {
-	return fmt.Sprintf("%#U", *s)
-}
-
-func (s *Chartype) Set(value string) error {
-	r := []rune(value)
-	if len(r) > 1 || r[0] == '\n' {
-		return errors.New("sep must be a single char not '\\n'")
-	}
-	*s = Chartype(r[0])
-	return nil
-}
-
-func DetectDelimiter(buf []byte) (sep_flag Chartype, err error) {
-	// auto detect the separator based on the first line
-	nb := len(buf)
-	if nb > 2048 {
-		nb = 2048
-	}
-	txt := string(buf[0:nb])
-	cn := strings.Count(txt, ",")
-	pn := strings.Count(txt, "|")
-	tn := strings.Count(txt, "\t")
-	td := strings.Count(txt, "~")
-	switch {
-	case (cn > pn) && (cn > tn) && (cn > td):
-		sep_flag = ','
-	case (pn > cn) && (pn > tn) && (pn > td):
-		sep_flag = '|'
-	case (tn > cn) && (tn > pn) && (tn > td):
-		sep_flag = '\t'
-	case (td > cn) && (td > pn) && (td > tn):
-		sep_flag = '~'
-	default:
-		return 0, fmt.Errorf("error: cannot determine the csv-delimit used in buf")
-	}
-	return
-}
-
 // InsertRawRows ------------------------------------------------------
 // Insert row function using a raw text buffer containing cst/tsv rows
 // Delegates to InsertRows
@@ -550,8 +523,8 @@ func (ctx *Context) InsertRawRows(dataTableAction *DataTableAction, token string
 			return
 		}
 		// byteBuf as the raw_rows
-		var sepFlag Chartype
-		sepFlag, err = DetectDelimiter(byteBuf)
+		var sepFlag jcsv.Chartype
+		sepFlag, err = jcsv.DetectDelimiter(byteBuf)
 		if err != nil {
 			log.Printf("Error while detecting delimiters for raw_rows: %v", err)
 			httpStatus = http.StatusBadRequest
@@ -670,6 +643,7 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 	row := make([]interface{}, len(sqlStmt.ColumnKeys))
 	for irow := range dataTableAction.Data {
 		// Pre-Processing hook
+		dbUpdateDone := false
 		switch {
 		case strings.HasSuffix(dataTableAction.FromClauses[0].Table, "pipeline_execution_status"):
 			if dataTableAction.Data[irow]["input_session_id"] == nil {
@@ -709,30 +683,85 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 				}
 				dataTableAction.Data[irow]["encrypted_roles"] = encryptedRoles
 			}
-
-		}
-		for jcol, colKey := range sqlStmt.ColumnKeys {
-			row[jcol] = dataTableAction.Data[irow][colKey]
-		}
-
-		// fmt.Printf("Insert Row with stmt %s\n", sqlStmt.Stmt)
-		// fmt.Printf("Insert Row on table %s: %v\n", dataTableAction.FromClauses[0].Table, row)
-		// Executing the InserRow Stmt
-		if strings.Contains(sqlStmt.Stmt, "RETURNING key") {
-			err = ctx.Dbpool.QueryRow(context.Background(), sqlStmt.Stmt, row...).Scan(&returnedKey[irow])
-		} else {
-			_, err = ctx.Dbpool.Exec(context.Background(), sqlStmt.Stmt, row...)
-		}
-		if err != nil {
-			log.Printf("While inserting in table %s: %v", dataTableAction.FromClauses[0].Table, err)
-			if strings.Contains(err.Error(), "duplicate key value") {
-				httpStatus = http.StatusConflict
-				err = errors.New("duplicate key value")
-				return
-			} else {
-				httpStatus = http.StatusInternalServerError
-				err = errors.New("error while inserting into a table")
+		case dataTableAction.FromClauses[0].Table == "rule_configv2" || 
+			dataTableAction.FromClauses[0].Table == "update/rule_configv2":
+			// Check if rule_config_json is json by checking it starts with [ and ends with ]
+			// If not json, assume it's csv, parse it to extract s,p,o and replace the table to be rule_config
+			// Note: This is a one to many: dataTableAction.Data[irow] in rule_config becomes many rows in rule_configv2.
+			//       Therefore the insert in rule_configv2 is performed here in the pre-processing hook and skip
+			//       the main insert below.
+			// Remove the old triples in rule_config, this needs to be done if it's csv or json
+			// First, remove the old triples if any
+			sqlStmtT3 := sqlInsertStmts["delete/rule_config"]
+			rowT3 := make([]interface{}, len(sqlStmtT3.ColumnKeys))
+			for jcol, colKey := range sqlStmtT3.ColumnKeys {
+				rowT3[jcol] = dataTableAction.Data[irow][colKey]
 			}
+			_, err = ctx.Dbpool.Exec(context.Background(), sqlStmtT3.Stmt, rowT3...)
+			if err != nil {
+				log.Printf("While removing previous triples from table rule_config: %v", err)
+				httpStatus = http.StatusInternalServerError
+				err = errors.New("error while removing previous triples from table rule_config")
+				return
+			}
+			ruleConfigJson := strings.TrimSpace(dataTableAction.Data[irow]["rule_config_json"].(string))
+			isJson := strings.HasPrefix(ruleConfigJson, "[") && strings.HasSuffix(ruleConfigJson, "]")
+			if !isJson {
+				// Let's assume it's csv (unless error) and if so let's not update table rule_configv2
+				rows, err2 := jcsv.Parse(ruleConfigJson)
+				if len(rows)>1 && len(rows[0])==4 && err2 == nil {
+					// rows contains "s,p,o,type", perform the update here
+					// Inserting new config triples
+					sqlStmtT3 = sqlInsertStmts["rule_config"]
+					rowT3 = make([]interface{}, len(sqlStmtT3.ColumnKeys))
+					for i := range rows {
+						// skip the header
+						if i > 0 {
+							dataTableAction.Data[irow]["subject"] = rows[i][0]
+							dataTableAction.Data[irow]["predicate"] = rows[i][1]
+							dataTableAction.Data[irow]["object"] = rows[i][2]
+							dataTableAction.Data[irow]["rdf_type"] = rows[i][3]
+							for jcol, colKey := range sqlStmtT3.ColumnKeys {
+								rowT3[jcol] = dataTableAction.Data[irow][colKey]
+							}
+							_, err = ctx.Dbpool.Exec(context.Background(), sqlStmtT3.Stmt, rowT3...)
+							if err != nil {
+								log.Printf("While inserting triples into table rule_config: %v", err)
+								httpStatus = http.StatusInternalServerError
+								err = errors.New("error while inserting triples into table rule_config")
+								return
+							}		
+						}
+					}
+				}
+			}
+		}
+		if !dbUpdateDone {
+			// Proceed at doing the db update
+			for jcol, colKey := range sqlStmt.ColumnKeys {
+				row[jcol] = dataTableAction.Data[irow][colKey]
+			}
+	
+			// fmt.Printf("Insert Row with stmt %s\n", sqlStmt.Stmt)
+			// fmt.Printf("Insert Row on table %s: %v\n", dataTableAction.FromClauses[0].Table, row)
+			// Executing the InserRow Stmt
+			if strings.Contains(sqlStmt.Stmt, "RETURNING key") {
+				err = ctx.Dbpool.QueryRow(context.Background(), sqlStmt.Stmt, row...).Scan(&returnedKey[irow])
+			} else {
+				_, err = ctx.Dbpool.Exec(context.Background(), sqlStmt.Stmt, row...)
+			}
+			if err != nil {
+				log.Printf("While inserting in table %s: %v", dataTableAction.FromClauses[0].Table, err)
+				if strings.Contains(err.Error(), "duplicate key value") {
+					httpStatus = http.StatusConflict
+					err = errors.New("duplicate key value")
+					return
+				} else {
+					httpStatus = http.StatusInternalServerError
+					err = errors.New("error while inserting into a table")
+					return
+				}
+			}	
 		}
 	}
 	// Post Processing Hook

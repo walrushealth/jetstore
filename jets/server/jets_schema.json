@@ -519,7 +519,7 @@
       {
         "columnName": "automated",
         "dataType": "bool",
-        "default": "'0'",
+        "default": "0",
         "isNotNull": true
       },
       {
@@ -542,6 +542,27 @@
       {
         "columnName": "input_columns_positions_csv",
         "dataType": "text"
+      },
+      {
+        "columnName": "input_format",
+        "description": "File format: csv, headerless_csv, fixed_width, parquet, parquet_select",
+        "dataType": "text",
+        "default": "''",
+        "isNotNull": true
+      },
+      {
+        "columnName": "input_format_data_json",
+        "description": "Additional configuration that is input_format specific encoded as json",
+        "dataType": "text",
+        "default": "''",
+        "isNotNull": true
+      },
+      {
+        "columnName": "is_part_files",
+        "description": "If true '1': file key is directory of part files",
+        "dataType": "bool",
+        "default": "0",
+        "isNotNull": true
       },
       {
         "columnName": "user_email",

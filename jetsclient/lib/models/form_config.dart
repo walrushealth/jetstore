@@ -415,9 +415,11 @@ class FormTypeaheadFieldConfig extends FormFieldConfig {
     super.autovalidateMode = AutovalidateMode.disabled,
     required this.typeaheadMenuItemCacheKey,
     required this.inputFieldConfig,
+    this.priorityTargetKey,
     this.defaultItem,
   });
   final String typeaheadMenuItemCacheKey;
+  final String? priorityTargetKey;
   final String? defaultItem;
   final FormInputFieldConfig inputFieldConfig;
 
@@ -430,7 +432,9 @@ class FormTypeaheadFieldConfig extends FormFieldConfig {
     return JetsTypeaheadFormField(
       key: UniqueKey(),
       formFieldConfig: this,
-      onChanged: (p0) => formState.setValueAndNotify(group, key, p0),
+      onChanged: (p0) {
+        formState.setValueAndNotify(group, key, p0.isNotEmpty ? p0 : null);
+      },
       formValidator: ((group, key, v) =>
           formConfig.formValidatorDelegate(formState, group, key, v)),
       formState: formState,

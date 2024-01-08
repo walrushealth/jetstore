@@ -20,9 +20,14 @@ final Map<String, TableConfig> _tableConfigurations = {
           '0'
         ],
         [
-          'Load client configuration (when pulling client configuration changes)',
+          'Load ALL client configurations (when pulling client configuration changes)',
           'wpLoadClientConfgOption',
           '1'
+        ],
+        [
+          'Load SELECTED client configurations (click next to select the clients)',
+          'wpLoadSelectedClientConfgOption',
+          '2'
         ],
       ],
       formStateConfig:
@@ -63,14 +68,20 @@ final Map<String, TableConfig> _tableConfigurations = {
       isCheckboxVisible: true,
       isCheckboxSingleSelect: false,
       isReadOnly: true,
+      showSelectedOnly: true,
       whereClauses: [],
       actions: [],
       staticTableModel: [
         ['Workspace will be compiled', 'wpCompileWorkspaceOption', '0'],
         [
-          'Client configuration will be loaded into database',
+          'ALL client configuration will be loaded into database',
           'wpLoadClientConfgOption',
           '1'
+        ],
+        [
+          'SELECTED client configuration will be loaded into database',
+          'wpLoadSelectedClientConfgOption',
+          '2'
         ],
       ],
       formStateConfig:
@@ -113,6 +124,7 @@ final Map<String, TableConfig> _tableConfigurations = {
     apiPath: '/dataTable',
     isCheckboxVisible: true,
     isCheckboxSingleSelect: false,
+    noCopy2Clipboard: true,
     whereClauses: [],
     actions: [ ],
     formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: []),
@@ -143,7 +155,9 @@ final Map<String, TableConfig> _tableConfigurations = {
     apiPath: '/dataTable',
     isCheckboxVisible: true,
     isCheckboxSingleSelect: false,
+    noCopy2Clipboard: true,
     isReadOnly: true,
+    showSelectedOnly: true,
     whereClauses: [],
     actions: [ ],
     formStateConfig: DataTableFormStateConfig(keyColumnIdx: 0, otherColumns: []),

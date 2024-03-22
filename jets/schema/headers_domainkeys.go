@@ -176,7 +176,6 @@ func parseColumn(column *string) []string {
 // --------------------------------------------------------------------------------------
 // Compute output table columns and associated domain keys
 // passing domainKeysJson as argument for completeness
-//* TODO Add case when no domain key info is provided, use jets:key as the domain_key
 func (dkInfo *HeadersAndDomainKeysInfo)Initialize(mainObjectType string, domainKeysJson *string) error {
 	var ok bool
 	if *domainKeysJson == "" {
@@ -495,9 +494,12 @@ func (dkInfo *HeadersAndDomainKeysInfo)ComputeGroupingKeyI(NumberOfShards int, o
 			cols := []string{groupingKey}
 			groupingKey = dkInfo.makeGroupingKey(&cols)
 			return groupingKey, ComputeShardId(NumberOfShards, groupingKey), nil
+		case nil:
+			log.Println("Error: Domain Key column is NULL")
+			return "", 0, nil
 		default:
 			log.Printf("Error: Domain Key column is not a string, it's %s", reflect.TypeOf(groupingKey).Kind())
-			return "", 0, nil
+			return "", 0, fmt.Errorf("error: Domain Key column is not a string, it's %s", reflect.TypeOf(groupingKey).Kind())
 		}
 	}
 	cols := make([]string, len(dk.ColumnPos))
@@ -505,9 +507,12 @@ func (dkInfo *HeadersAndDomainKeysInfo)ComputeGroupingKeyI(NumberOfShards int, o
 		switch value := (*record)[dk.ColumnPos[ipos]].(type) {
 		case string:
 			cols[ipos] = value
+		case nil:
+			log.Println("Error: Domain Key column", dk.ColumnNames[ipos],"is NULL")
+			return "", 0, nil
 		default:
 			log.Println("Error: Domain Key column", dk.ColumnNames[ipos],"is not a string, it's", reflect.TypeOf(value).Kind())
-			return "", 0, nil
+			return "", 0, fmt.Errorf("error: Domain Key column is not a string, it's %s", reflect.TypeOf(value).Kind())
 		}
 	}
 	groupingKey := dkInfo.makeGroupingKey(&cols)

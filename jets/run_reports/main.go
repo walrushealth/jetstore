@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -15,6 +17,7 @@ import (
 	"github.com/artisoft-io/jetstore/jets/dbutils"
 	"github.com/artisoft-io/jetstore/jets/run_reports/delegate"
 	"github.com/artisoft-io/jetstore/jets/workspace"
+	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
@@ -59,19 +62,60 @@ var devMode bool
 // the directives of config.json
 // NOTE 12/13/2023:
 // Exposing source_period_key as a substitution variable in the report scripts
+// NOTE 01/11/2024:
+// DO NOT USE jetsapi.session_registry FOR THE CURRENT session_id SINCE IT IS NOT REGISTERED YET
+// The session_id is registered AFTER the report completion during the status_update task
+// NOTE 02/27/2024:
+// When run_report is used by serverSM, make sure there was data in output before running the reports.
+// This is when count(*) > 0 from pipeline_execution_details where session_id = $session_id (that is serverSM case)
+// and then if sum(output_records_count) == 0 && count(*) > 0 from pipeline_execution_details where session_id = $session_id
+// skip running the reports
 
-func getSourcePeriodKey(dbpool *pgxpool.Pool, sessionId string) (int, error) {
+func getSourcePeriodKey(dbpool *pgxpool.Pool, sessionId, fileKey string) (int, error) {
 	var sourcePeriodKey int
 	err := dbpool.QueryRow(context.Background(), 
 		"SELECT source_period_key FROM jetsapi.pipeline_execution_status WHERE session_id=$1", 
 		sessionId).Scan(&sourcePeriodKey)
 	if err != nil {
-		return 0, 
-			fmt.Errorf("failed to get source_period_key from pipeline_execution_status table for session_id '%s': %v", sessionId, err)
+		err = dbpool.QueryRow(context.Background(), 
+		"SELECT source_period_key FROM jetsapi.file_key_staging WHERE file_key=$1", 
+		fileKey).Scan(&sourcePeriodKey)
+		if err != nil {
+			return 0, 
+				fmt.Errorf("failed to get source_period_key from pipeline_execution_status or file_key_staging table for session_id '%s': %v", sessionId, err)
+		}
 	}
 	return sourcePeriodKey, nil
 }
 
+// Returns dbRecordCount (nbr of rows in pipeline_execution_details) and outputRecordCount (nbr of rows saved from server process)
+func getOutputRecordCount(dbpool *pgxpool.Pool, sessionId string) (int64, int64) {
+	var dbRecordCount, outputRecordCount sql.NullInt64
+	err := dbpool.QueryRow(context.Background(), 
+		"SELECT COUNT(*), SUM(output_records_count) FROM jetsapi.pipeline_execution_details WHERE session_id=$1", 
+		sessionId).Scan(&dbRecordCount, &outputRecordCount)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, 0
+		}
+		msg := fmt.Sprintf("QueryRow on pipeline_execution_details to get nbr of output records failed: %v", err)
+		log.Fatalf(msg)
+	}
+	return dbRecordCount.Int64, outputRecordCount.Int64
+}
+
+// Return the Compute Pipes config json from source_config table
+func getComputePipesJson(dbpool *pgxpool.Pool, client, org, objectType string) string {
+	var computePipesJson sql.NullString
+	err := dbpool.QueryRow(context.Background(), 
+		"SELECT compute_pipes_json FROM jetsapi.source_config WHERE client=$1 AND org=$2 AND object_type=$3", 
+		client, org, objectType).Scan(&computePipesJson)
+	if err != nil {
+		// may not have an entry in source_config
+		return ""
+	}
+	return computePipesJson.String
+}
 
 func coordinateWorkAndUpdateStatus(ca *delegate.CommandArguments) error {
 	wh := os.Getenv("WORKSPACES_HOME")
@@ -90,6 +134,18 @@ func coordinateWorkAndUpdateStatus(ca *delegate.CommandArguments) error {
 		return fmt.Errorf("while opening db connection: %v", err)
 	}
 	defer dbpool.Close()
+
+	// Check for special case: serverSM produced no output records, then exit silently
+	if len(ca.SessionId) > 0 {
+		dbRecordCount, outputRecordCount := getOutputRecordCount(dbpool, ca.SessionId)
+		if dbRecordCount > 0 && outputRecordCount == 0 {
+			fmt.Println("This run_report is for a serverSM that produced no output records, exiting silently")
+			return nil
+		}
+	}
+
+	// Get the compute pipes json from source_config
+	ca.ComputePipesJson = getComputePipesJson(dbpool, ca.Client, ca.Org, ca.ObjectType)
 
 	// Fetch reports.tgz from overriten workspace files (here we want the reports definitions in particular)
 	// We don't care about /lookup.db and /workspace.db, hence the argument skipSqliteFiles = true
@@ -110,6 +166,7 @@ func coordinateWorkAndUpdateStatus(ca *delegate.CommandArguments) error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Println("Warning report config.json does not exist, using defaults")
+			ca.CurrentReportDirectives = &delegate.ReportDirectives{}
 		} else {
 			return fmt.Errorf("while reading report config.json: %v", err)
 		}
@@ -160,19 +217,28 @@ func coordinateWorkAndUpdateStatus(ca *delegate.CommandArguments) error {
 
 	// Put the full path to the ReportScript
 	ca.ReportScriptPaths = make([]string, 0)
+	foundReports := false
 	if len(ca.CurrentReportDirectives.ReportScripts) > 0 {
 		for i := range ca.CurrentReportDirectives.ReportScripts {
+			foundReports = true
 			ca.ReportScriptPaths = append(ca.ReportScriptPaths, fmt.Sprintf("%s/%s/reports/%s", wh, ws, ca.CurrentReportDirectives.ReportScripts[i]))
 		}
 	} else {
 		// reportScripts defaults to process name
+		foundReports = true
 		ca.ReportScriptPaths = append(ca.ReportScriptPaths, fmt.Sprintf("%s/%s/reports/%s.sql", wh, ws, *reportName))
 		ca.CurrentReportDirectives.ReportScripts = []string{*reportName}
 	}
 
-	if len(ca.ReportScriptPaths) == 0 {
+	if !foundReports {
 		return fmt.Errorf("error: can't determine the report definitions file")
 	}
+
+	if len(ca.ReportScriptPaths) == 0 {
+		log.Println("No report to execute, exiting silently...")
+		return nil
+	}
+
 	fmt.Println("Executing the following reports:")
 	for i := range ca.ReportScriptPaths {
 		fmt.Println("  -", ca.ReportScriptPaths[i])
@@ -180,7 +246,7 @@ func coordinateWorkAndUpdateStatus(ca *delegate.CommandArguments) error {
 
 	// Get the source_period_key from pipeline_execution_status table by session_id
 	if len(ca.SessionId) > 0 {
-		k, err := getSourcePeriodKey(dbpool, ca.SessionId)
+		k, err := getSourcePeriodKey(dbpool, ca.SessionId, ca.FileKey)
 		if err != nil {
 			fmt.Println(err)
 		} else {
@@ -318,6 +384,9 @@ func main() {
 	fmt.Println("ENV JETSTORE_DEV_MODE:",os.Getenv("JETSTORE_DEV_MODE"))
 	fmt.Println("ENV WORKSPACE:",os.Getenv("WORKSPACE"))
 	fmt.Println("Process Input file_key:", fileKey)
+	fmt.Println("*** DO NOT USE jetsapi.session_registry TABLE IN REPORTS FOR THE CURRENT session_id SINCE IT IS NOT REGISTERED YET")
+	fmt.Println("*** The session_id is registered AFTER the report completion during the status_update task")
+	fmt.Println("*** Use the substitution variable $SOURCE_PERIOD_KEY to get the source_period_key of the current session_id")
 
 	// Extract file key components
 	keyMap := make(map[string]interface{})
@@ -338,7 +407,8 @@ func main() {
 		// OutputPath: ,
 		OriginalFileName: *originalFileName,
 		ReportScriptPaths: []string{},
-		// CurrentReportConfiguration: reportConfig, // set in func coordinateWorkAndUpdateStatus
+		// CurrentReportDirectives: ReportDirectives, // set in func coordinateWorkAndUpdateStatus
+		// ComputePipesJson: string,                  // set in func coordinateWorkAndUpdateStatus
 		BucketName: *awsBucket,
 		RegionName: *awsRegion,
 	}

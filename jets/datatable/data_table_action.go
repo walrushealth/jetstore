@@ -578,9 +578,9 @@ func (ctx *Context) InsertRawRows(dataTableAction *DataTableAction, token string
 		case "raw_rows/process_mapping":
 			// Put the table name in each row
 			var tableName string
-			client := dataTableAction.Data[0]["client"]
-			org := dataTableAction.Data[0]["org"]
-			objectType := dataTableAction.Data[0]["object_type"]
+			client := dataTableAction.Data[irow]["client"]
+			org := dataTableAction.Data[irow]["org"]
+			objectType := dataTableAction.Data[irow]["object_type"]
 			if client != nil && objectType != nil {
 				if org == nil || org == "" {
 					tableName = fmt.Sprintf("%s_%s", client, objectType)
@@ -594,7 +594,7 @@ func (ctx *Context) InsertRawRows(dataTableAction *DataTableAction, token string
 				}
 			}
 			if tableName == "" {
-				tableName = dataTableAction.Data[0]["table_name"].(string)
+				tableName = dataTableAction.Data[irow]["table_name"].(string)
 			}
 			// Remove existing rows in database
 			stmt := `DELETE FROM jetsapi.process_mapping 
@@ -903,30 +903,30 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 			}
 		}
 	case "pipeline_execution_status", "short/pipeline_execution_status":
-		// Need to get:
-		//	- DevMode: run_report_only, run_server_only, run_server_reports
-		//  - State Machine URI: serverSM, or reportsSM
-		// from process_config table
-		// ----------------------------
-		var devModeCode, stateMachineName string
-		processName := dataTableAction.Data[0]["process_name"]
-		if processName == nil {
-			httpStatus = http.StatusBadRequest
-			err = errors.New("missing column process_name in request")
-			return
-		}
-		// devModeCode, stateMachineName, err = getDevModeCode(ctx.Dbpool, processName.(string))
-		stmt := "SELECT devmode_code, state_machine_name FROM jetsapi.process_config WHERE process_name = $1"
-		err = ctx.Dbpool.QueryRow(context.Background(), stmt, processName).Scan(&devModeCode, &stateMachineName)
-		if err != nil {
-			httpStatus = http.StatusInternalServerError
-			err = fmt.Errorf("while getting devModeCode, stateMachineName from process_config WHERE process_name = '%v': %v", processName, err)
-			return
-		}
-
 		// Run the server -- prepare the command line arguments
 		row := make(map[string]interface{}, len(sqlStmt.ColumnKeys))
 		for irow := range dataTableAction.Data {
+			// Need to get:
+			//	- DevMode: run_report_only, run_server_only, run_server_reports
+			//  - State Machine URI: serverSM, or reportsSM
+			// from process_config table
+			// ----------------------------
+			var devModeCode, stateMachineName string
+			processName := dataTableAction.Data[irow]["process_name"]
+			if processName == nil {
+				httpStatus = http.StatusBadRequest
+				err = errors.New("missing column process_name in request")
+				return
+			}
+			// devModeCode, stateMachineName, err = getDevModeCode(ctx.Dbpool, processName.(string))
+			stmt := "SELECT devmode_code, state_machine_name FROM jetsapi.process_config WHERE process_name = $1"
+			err = ctx.Dbpool.QueryRow(context.Background(), stmt, processName).Scan(&devModeCode, &stateMachineName)
+			if err != nil {
+				httpStatus = http.StatusInternalServerError
+				err = fmt.Errorf("while getting devModeCode, stateMachineName from process_config WHERE process_name = '%v': %v", processName, err)
+				return
+			}
+
 			// returnedKey is the key of the row inserted in the db, here it correspond to peKey
 			if returnedKey[irow] <= 0 {
 				log.Printf(
@@ -978,10 +978,16 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 			// Call server synchronously
 			case ctx.DevMode:
 				var buf strings.Builder
+				peKeyInt, _ := strconv.Atoi(peKey)
+				ca := StatusUpdate{
+					Status: "completed",
+					Dbpool: ctx.Dbpool,
+					PeKey: peKeyInt,
+				}
 				if devModeCode == "run_server_only" || devModeCode == "run_server_reports" {
 					// DevMode: Lock session id & register run on last shard (unless error)
 					// loop over every chard to exec in succession
-					for shardId := 0; shardId < ctx.NbrShards; shardId++ {
+					for shardId := 0; shardId < ctx.NbrShards && err == nil; shardId++ {
 						serverArgs := []string{
 							"-peKey", peKey,
 							"-userEmail", userEmail.(string),
@@ -999,9 +1005,6 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 						if ctx.UsingSshTunnel {
 							serverArgs = append(serverArgs, "-usingSshTunnel")
 						}
-						if shardId < ctx.NbrShards-1 {
-							serverArgs = append(serverArgs, "-doNotLockSessionId")
-						}
 						log.Printf("Run server: %s", serverArgs)
 						cmd := exec.Command("/usr/local/bin/server", serverArgs...)
 						cmd.Env = append(os.Environ(),
@@ -1012,20 +1015,25 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 						cmd.Stderr = &buf
 						log.Printf("Executing server command '%v'", serverArgs)
 						err = cmd.Run()
-						if err != nil {
-							log.Printf("while executing server command '%v': %v", serverArgs, err)
-							log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
-							log.Println("SERVER CAPTURED OUTPUT BEGIN")
-							log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
-							(*results)["log"] = buf.String()
-							log.Println((*results)["log"])
-							log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
-							log.Println("SERVER CAPTURED OUTPUT END")
-							log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
-							httpStatus = http.StatusInternalServerError
-							err = errors.New("error while running server command")
-							return
-						}
+					}
+					if err != nil {
+						log.Printf("while executing server command: %v", err)
+						log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+						log.Println("SERVER CAPTURED OUTPUT BEGIN")
+						log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+						(*results)["log"] = buf.String()
+						log.Println((*results)["log"])
+						log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+						log.Println("SERVER CAPTURED OUTPUT END")
+						log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
+						err = errors.New("error while running server command")
+						ca.Status = "failed"
+						ca.FailureDetails = "Error while running server command in test mode"
+						// Update server execution status table
+						ca.ValidateArguments()
+						ca.CoordinateWork()
+						httpStatus = http.StatusInternalServerError
+						return
 					}
 				}
 
@@ -1055,9 +1063,17 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 						log.Println("=*=*=*=*=*=*=*=*=*=*=*=*=*=*")
 						httpStatus = http.StatusInternalServerError
 						err = errors.New("error while running run_reports command")
+						ca.Status = "failed"
+						ca.FailureDetails = fmt.Sprintf("Error while running reports command in test mode: %s", (*results)["log"])
+						// Update server execution status table
+						ca.ValidateArguments()
+						ca.CoordinateWork()
 						return
 					}
 				}
+				// all good, update server execution status table
+				ca.ValidateArguments()
+				ca.CoordinateWork()
 				log.Println("============================")
 				log.Println("SERVER & REPORTS CAPTURED OUTPUT BEGIN")
 				log.Println("============================")
@@ -1076,7 +1092,6 @@ func (ctx *Context) InsertRows(dataTableAction *DataTableAction, token string) (
 						"-userEmail", userEmail.(string),
 						"-shardId", strconv.Itoa(shardId),
 						"-nbrShards", strconv.Itoa(ctx.NbrShards),
-						"-doNotLockSessionId",
 					}
 					if serverCompletedMetric != "" {
 						serverArgs = append(serverArgs, "-serverCompletedMetric")
@@ -1428,6 +1443,19 @@ func (ctx *Context) DropTable(dataTableAction *DataTableAction, token string) (r
 		if err != nil && !strings.Contains(err.Error(), "does not exist") {
 			httpStatus = http.StatusBadRequest
 			return
+		}
+
+		// Delete entry in input_registry, if any, for tableName
+		// Get all corresponding session_id and delete them from session_registry
+		stmt = fmt.Sprintf(`DELETE FROM jetsapi.session_registry sr
+			USING jetsapi.input_registry ir
+			WHERE ir.table_name = '%s'
+				AND sr.session_id=ir.session_id;
+			DELETE FROM jetsapi.input_registry WHERE table_name='%s';`, 
+		  tableName.(string), tableName.(string))
+		_, err = ctx.Dbpool.Exec(context.Background(), stmt)
+		if err != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("while droping tables: %v", err)
 		}
 	}
 

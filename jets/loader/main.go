@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
+	"github.com/artisoft-io/jetstore/jets/datatable"
 	"github.com/artisoft-io/jetstore/jets/datatable/jcsv"
 	"github.com/artisoft-io/jetstore/jets/user"
 )
@@ -47,7 +48,6 @@ var userEmail = flag.String("userEmail", "", "User identifier to register the lo
 var nbrShards = flag.Int("nbrShards", 1, "Number of shards to use in sharding the input file")
 var sourcePeriodKey = flag.Int("sourcePeriodKey", -1, "Source period key associated with the in_file (fileKey)")
 var sessionId = flag.String("sessionId", "", "Process session ID, is needed as -inSessionId for the server process (must be unique), default based on timestamp.")
-var doNotLockSessionId = flag.Bool("doNotLockSessionId", false, "Do NOT lock sessionId on sucessful completion (default is to lock the sessionId on successful completion")
 var completedMetric = flag.String("loaderCompletedMetric", "loaderCompleted", "Metric name to register the loader successfull completion (default: loaderCompleted)")
 var failedMetric = flag.String("loaderFailedMetric", "loaderFailed", "Metric name to register the load failure [success load metric: loaderCompleted] (default: loaderFailed)")
 var tableName string
@@ -56,6 +56,7 @@ var inputColumnsJson string
 var inputColumnsPositionsCsv string
 var inputFormat string
 var inputFormatDataJson string
+var computePipesJson string
 var isPartFiles int
 var sep_flag jcsv.Chartype = '€'
 var errOutDir string
@@ -65,6 +66,8 @@ var devMode bool
 var adminEmail string
 var jetsDebug int
 var processingErrors []string
+var fileKeyComponents map[string]interface{}
+var fileKeyDate time.Time
 
 func init() {
 	flag.Var(&sep_flag, "sep", "Field separator for csv files, default is auto detect between pipe ('|'), tilda ('~'), tab ('\t') or comma (',')")
@@ -196,7 +199,6 @@ func main() {
 	fmt.Println("Got argument: userEmail", *userEmail)
 	fmt.Println("Got argument: nbrShards", *nbrShards)
 	fmt.Println("Got argument: sessionId", *sessionId)
-	fmt.Println("Got argument: doNotLockSessionId", *doNotLockSessionId)
 	fmt.Println("Got argument: usingSshTunnel", *usingSshTunnel)
 	fmt.Println("Got argument: loaderCompletedMetric", *completedMetric)
 	fmt.Println("Got argument: loaderFailedMetric", *failedMetric)
@@ -221,9 +223,16 @@ func main() {
 	fmt.Println("ENV JETS_DOMAIN_KEY_SEPARATOR:", os.Getenv("JETS_DOMAIN_KEY_SEPARATOR"))
 	if devMode {
 		fmt.Println("Running in DEV MODE")
-		fmt.Println("Nbr Shards in DEV MODE: nbrShards", nbrShards)
+		fmt.Println("Nbr Shards in DEV MODE: nbrShards", *nbrShards)
 	}
 	jetsDebug, _ = strconv.Atoi(os.Getenv("JETS_LOG_DEBUG"))
+	fileKeyComponents = make(map[string]interface{})
+	fileKeyComponents = datatable.SplitFileKeyIntoComponents(fileKeyComponents, inFile)
+	year := fileKeyComponents["year"].(int)
+	month := fileKeyComponents["month"].(int)
+	day := fileKeyComponents["day"].(int)
+	fileKeyDate = time.Date(year, time.Month(month), day, 14, 0, 0, 0, time.UTC)
+	log.Println("fileKeyDate:",fileKeyDate)
 
 	err = coordinateWork()
 	if err != nil {

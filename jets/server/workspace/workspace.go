@@ -113,7 +113,9 @@ func (workspaceDb *WorkspaceDb) GetRangeDataType(dataProperty string) (string, b
 		var asArray bool
 		err := workspaceDb.db.QueryRow("SELECT type, as_array FROM data_properties WHERE name = ?", dataProperty).Scan(&dataType, &asArray)
 		if err != nil {
-			return dataType, asArray, fmt.Errorf("while looking up range data type for data_property %s: %v", dataProperty, err)
+			log.Printf("WARNING: Unknown data property '%s' when looking up it's data type. Assuming it's functional text", dataProperty)
+			return "text", false, nil
+			// return dataType, asArray, fmt.Errorf("while looking up range data type for data_property %s: %v", dataProperty, err)
 		}
 		return dataType, asArray, nil
 	}
@@ -334,7 +336,7 @@ func (tableSpec *DomainTable) UpdateDomainTableSchema(dbpool *pgxpool.Pool, drop
 		idxname := tableSpec.TableName+"_"+domainKey+"_idx"
 		tableDefinition.Indexes = append(tableDefinition.Indexes, schema.IndexDefinition{
 			IndexName: idxname,
-			IndexDef: fmt.Sprintf(`INDEX IF NOT EXISTS %s ON %s  (session_id, %s ASC)`,
+			IndexDef: fmt.Sprintf(`INDEX %s ON %s  (session_id, %s ASC)`,
 				pgx.Identifier{idxname}.Sanitize(),
 				pgx.Identifier{tableSpec.TableName}.Sanitize(),
 				pgx.Identifier{domainKey}.Sanitize()),
@@ -342,7 +344,7 @@ func (tableSpec *DomainTable) UpdateDomainTableSchema(dbpool *pgxpool.Pool, drop
 		idxname = tableSpec.TableName + "_" + shardId + "_idx"
 		tableDefinition.Indexes = append(tableDefinition.Indexes, schema.IndexDefinition{
 			IndexName: idxname,
-			IndexDef: fmt.Sprintf(`INDEX IF NOT EXISTS %s ON %s  (session_id, %s)`,
+			IndexDef: fmt.Sprintf(`INDEX %s ON %s  (session_id, %s)`,
 				pgx.Identifier{idxname}.Sanitize(),
 				pgx.Identifier{tableSpec.TableName}.Sanitize(),
 				pgx.Identifier{shardId}.Sanitize()),

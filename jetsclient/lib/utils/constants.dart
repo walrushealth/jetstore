@@ -5,6 +5,7 @@ const betweenTheButtonsPadding = 8.0;
 var globalWorkspaceUri = '';
 var globalWorkspaceName = '';
 var globalWorkspaceBranch = '';
+RegExp? globalWorkspaceFileKeyLabelRe;
 
 /// Button action style, used by both JetsDataTable and JetsForm
 enum ActionStyle {
@@ -136,6 +137,7 @@ class ScreenKeys {
   static const fileRegistryTable = "fileRegistryTableScreen";
   static const filePreview = "filePreviewScreen";
   static const execStatusDetailsTable = "execStatusDetailsTable";
+  static const execStatsDetailsTable = "execStatsDetailsTable";
   static const processErrorsTable = "processErrorsTable";
 
   // Workspace IDE Screens
@@ -149,6 +151,7 @@ class ScreenKeys {
   static const ufMappingForm = "ufMappingFormScreenUF";
   static const ufPipelineConfig = "pipelineConfigScreenUF";
   static const ufLoadFiles = "ufLoadFilesScreenUF";
+  static const ufRegisterFileKey = "ufRegisterFileKey";
   static const ufStartPipeline = "ufStartPipelineScreenUF";
   static const ufPullWorkspace = "ufPullWorkspaceScreenUF";
   static const ufLoadConfig = "ufLoadConfigScreenUF";
@@ -231,7 +234,6 @@ class FormKeys {
   static const scEditFixedWidthLayoutUF = "scEditFixedWidthLayoutUF";
   static const scEditDomainKeysUF = "scEditDomainKeysUF";
   static const scEditCodeValueMappingUF = "scEditCodeValueMappingUF";
-  static const scEditComputePipesJsonUF = "scEditComputePipesJsonUF";
   static const scEditAutomatedModeUF = "scEditAutomatedModeUF";
   static const scSummaryUF = "scSummaryUF";
   // File Mapping UF Forms
@@ -258,6 +260,8 @@ class FormKeys {
   // Load Files UF Forms
   static const lfSelectSourceConfigUF = "lfSelectSourceConfigUF";
   static const lfSelectFileKeysUF = "lfSelectFileKeysUF";
+  // Register File Key UF Forms
+  static const rfkSubmitSchemaEvent = "rfkSubmitSchemaEvent";
   // Start Pipeline UF Forms
   static const spSelectPipelineConfigUF = "spSelectPipelineConfigUF";
   static const spSelectMainDataSourceUF = "spSelectMainDataSourceUF";
@@ -459,7 +463,11 @@ class FSK {
   static const scFileTypeOption = "input_format";
   static const scCsvOption = "csv";
   static const scHeaderlessCsvOption = "headerless_csv";
+  static const scHeaderlessCsvOptionWithSchemaProvider =
+      "headerless_csv_with_schema_provider";
   static const scFixedWidthOption = "fixed_width";
+  static const scFixedWidthOptionWithSchemaProvider =
+      "fixed_width_with_schema_provider";
   static const scParquetOption = "parquet";
   static const scParquetSelectOption = "parquet_select";
   static const scXlsxOption = "xlsx";
@@ -478,6 +486,9 @@ class FSK {
   // update_db argument: -clients
   static const updateDbClients = "updateDbClients";
   static const wpClientListRO = "wpClientListRO";
+
+  // Register File Key / Schema Event
+  static const schemaEventJson = "schemaEventJson";
 
   // Start Pipeline UF
   static const spAllDataSourceKeys = "spAllDataSourceKeys";
@@ -665,6 +676,9 @@ class ActionKeys {
   static const lfDropTable = "lfDropTable";
   static const lfSyncFileKey = "lfSyncFileKey";
 
+  // Register File Key UF
+  static const rfkSubmitSchemaEventUF = "rfkSubmitSchemaEventUF";
+
   // Start Pipeline UF ActionKeys
   static const spPipelineSelected = "spPipelineSelected";
   static const spStartPipelineUF = "spStartPipelineUF";
@@ -690,6 +704,7 @@ class UserFlowKeys {
   static const mapFileUF = "mapFileUF";
   static const pipelineConfigUF = "pipelineConfigUF";
   static const loadFilesUF = "loadFilesUF";
+  static const registerFileKeyUF = "registerFileKeyUF";
   static const startPipelineUF = "startPipelineUF";
   static const workspacePullUF = "workspacePullUF";
   static const loadConfigUF = "loadConfigUF";
@@ -712,6 +727,7 @@ class DTKeys {
   static const inputLoaderStatusTable = "inputLoaderStatusTable";
   static const pipelineExecStatusTable = "pipelineExecStatusTable";
   static const pipelineExecDetailsTable = "pipelineExecDetailsTable";
+  static const cpipesExecDetailsTable = "cpipesExecDetailsTable";
   static const processErrorsTable = "processErrorsTable";
   // View rete session triples v1
   static const reteSessionTriplesTable = "reteSessionTriplesTable";

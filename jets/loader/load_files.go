@@ -2,19 +2,20 @@ package main
 
 import (
 	"bufio"
-	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"reflect"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/artisoft-io/jetstore/jets/schema"
+	"github.com/artisoft-io/jetstore/jets/csv"
 	"github.com/artisoft-io/jetstore/jets/compute_pipes"
+	"github.com/artisoft-io/jetstore/jets/schema"
 	"github.com/dimchansky/utfbom"
 	goparquet "github.com/fraugster/parquet-go"
 	"github.com/google/uuid"
@@ -29,31 +30,42 @@ import (
 // Backward compatibility: when compute pipe graph config is null or empty, the input file content is save in database, meaning the
 // compute transformation is the identity operator.
 
-func loadFiles(dbpool *pgxpool.Pool, headersDKInfo *schema.HeadersAndDomainKeysInfo, done chan struct{}, errCh chan error,
-	fileNamesCh <-chan string, loadFromS3FilesResultCh chan<- LoadFromS3FilesResult, copy2DbResultCh chan chan compute_pipes.ComputePipesResult,
-	badRowsWriter *bufio.Writer) {
+func loadFiles(dbpool *pgxpool.Pool, headersDKInfo *schema.HeadersAndDomainKeysInfo, done chan struct{}, _ chan error,
+	fileNamesCh <-chan string, chResults *compute_pipes.ChannelResults, badRowsWriter *bufio.Writer) {
 
 	// Create a channel to use as a buffer between the file loader and the copy to db
 	// This gives the opportunity to use Compute Pipes to transform the data before writing to the db
 	// This channel is buffered by the same size as the chunk size sent to db
-	computePipesInputCh := make(chan []interface{}, 100)
+	computePipesInputCh := make(chan []interface{}, 10)
 
 	defer func() {
-		// if r := recover(); r != nil {
-		// 	loadFromS3FilesResultCh <- LoadFromS3FilesResult{err: fmt.Errorf("recovered error: %v", r)}
-		// 	debug.PrintStack()
-		// 	close(done)
-		// }
+		if r := recover(); r != nil {
+			var buf strings.Builder
+			buf.WriteString(fmt.Sprintf("LoadFiles: recovered error: %v\n", r))
+			buf.WriteString(string(debug.Stack()))
+			err := errors.New(buf.String())
+			log.Println(err)
+			chResults.LoadFromS3FilesResultCh <- compute_pipes.LoadFromS3FilesResult{Err: err}
+			close(done)
+		}
 		fmt.Println("Closing computePipesInputCh **")
 		close(computePipesInputCh)
 	}()
 
-	// Start the Compute Pipes async
-	go compute_pipes.StartComputePipes(dbpool, headersDKInfo, done, errCh, computePipesInputCh, copy2DbResultCh, 
-		&computePipesJson, map[string]interface{}{
-			"$SESSIONID": *sessionId,
-			"$FILE_KEY_DATE": fileKeyDate,
-		})
+	// Loader in classic mode, no compute pipes defined
+	log.Println("Loader in classic mode, no compute pipes defined")
+	tableIdentifier, err := compute_pipes.SplitTableName(headersDKInfo.TableName)
+	if err != nil {
+		err = fmt.Errorf("while splitting table name: %s", err)
+		fmt.Println(err)
+		chResults.LoadFromS3FilesResultCh <- compute_pipes.LoadFromS3FilesResult{LoadRowCount: 0, BadRowCount: 0, Err: err}
+		return
+	}
+	wt := compute_pipes.NewWriteTableSource(computePipesInputCh, tableIdentifier, headersDKInfo.Headers)
+	table := make(chan compute_pipes.ComputePipesResult, 1)
+	chResults.Copy2DbResultCh <- table
+	close(chResults.Copy2DbResultCh)
+	go wt.WriteTable(dbpool, done, table)
 
 	var totalRowCount, badRowCount int64
 	for localInFile := range fileNamesCh {
@@ -63,11 +75,11 @@ func loadFiles(dbpool *pgxpool.Pool, headersDKInfo *schema.HeadersAndDomainKeysI
 		badRowCount += badCount
 		if err != nil {
 			fmt.Println("loadFile2Db returned error", err)
-			loadFromS3FilesResultCh <- LoadFromS3FilesResult{LoadRowCount: totalRowCount, BadRowCount: badRowCount, err: err}
+			chResults.LoadFromS3FilesResultCh <- compute_pipes.LoadFromS3FilesResult{LoadRowCount: totalRowCount, BadRowCount: badRowCount, Err: err}
 			return
 		}
 	}
-	loadFromS3FilesResultCh <- LoadFromS3FilesResult{LoadRowCount: totalRowCount, BadRowCount: badRowCount}
+	chResults.LoadFromS3FilesResultCh <- compute_pipes.LoadFromS3FilesResult{LoadRowCount: totalRowCount, BadRowCount: badRowCount}
 }
 
 func loadFile2DB(headersDKInfo *schema.HeadersAndDomainKeysInfo, filePath *string, badRowsWriter *bufio.Writer,
@@ -168,7 +180,6 @@ func loadFile2DB(headersDKInfo *schema.HeadersAndDomainKeysInfo, filePath *strin
 	if err != nil {
 		return 0, 0, err
 	}
-
 	var inputRowCount int64
 	var record []string
 	var recordTypeOffset int
@@ -219,12 +230,22 @@ func loadFile2DB(headersDKInfo *schema.HeadersAndDomainKeysInfo, filePath *strin
 						record[i] = ""
 					} else {
 						switch vv := rawValue.(type) {
-						case int:
-							record[i] = strconv.Itoa(vv)
 						case string:
 							record[i] = vv
 						case []byte:
 							record[i] = string(vv)
+						case int:
+							record[i] = strconv.Itoa(vv)
+						case int32:
+							record[i] = strconv.FormatInt(int64(vv), 10)
+						case int64:
+							record[i] = strconv.FormatInt(vv, 10)
+						case float64:
+							record[i] = strconv.FormatFloat(vv, 'E', -1, 32)
+						case float32:
+							record[i] = strconv.FormatFloat(float64(vv), 'E', -1, 32)
+						case bool:
+							record[i] = fmt.Sprintf("%v", vv)
 						default:
 							t := reflect.TypeOf(rawValue)
 							if t.Kind() == reflect.Array {
@@ -340,6 +361,7 @@ func loadFile2DB(headersDKInfo *schema.HeadersAndDomainKeysInfo, filePath *strin
 			copyRec[sessionIdPos] = *sessionId
 			jetsKeyStr := uuid.New().String()
 			copyRec[lastUpdatePos] = lastUpdate
+
 			var mainDomainKey string
 			var mainDomainKeyPos int
 			var mainShardIdPos int
@@ -387,11 +409,13 @@ func loadFile2DB(headersDKInfo *schema.HeadersAndDomainKeysInfo, filePath *strin
 				copyRec[mainDomainKeyPos] = jetsKeyStr
 				copyRec[mainShardIdPos] = schema.ComputeShardId(*nbrShards, jetsKeyStr)
 			}
+
 			copyRec[jetsKeyPos] = jetsKeyStr
 			select {
 			case computePipesInputCh <- copyRec:
 			case <-done:
-				return inputRowCount, int64(len(badRowsPos)), fmt.Errorf("loading input row from file interrupted")
+				log.Println("loading input row from file interrupted")
+				return inputRowCount, int64(len(badRowsPos)), nil
 			}
 			inputRowCount += 1
 		}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/artisoft-io/jetstore/jets/csv"
 	"github.com/artisoft-io/jetstore/jets/datatable/jcsv"
 	"github.com/dimchansky/utfbom"
 )
@@ -59,7 +59,7 @@ func getRawHeadersFromCsvFile(fileHd *os.File) (*[]string, error) {
 			return nil, err
 		}
 	}
-	fmt.Println("Detected sep_flag", sep_flag)
+	fmt.Println("Detected sep_flag:", sep_flag)
 
 	// Read the file headers
 	switch inputFileEncoding {

@@ -23,6 +23,7 @@ const domainTableViewerPath = '/domainTableViewer/:table_name/:session_id';
 const queryToolPath = '/queryTool';
 const filePreviewPath = '/filePreviewPath/:file_key';
 const executionStatusDetailsPath = '/executionStatusDetails/:session_id';
+const executionStatsDetailsPath = '/executionStatsDetails/:session_id';
 const processErrorsPath = '/processErrors/:session_id';
 
 // Old Rule Config with triples
@@ -48,6 +49,7 @@ const ufFileMappingPath = '/fileMappingUF';
 const ufMappingPath = '/fileMappingUF/mapping/:table_name/:object_type';
 const ufPipelineConfigPath = '/pipelineConfigUF';
 const ufLoadFilesPath = '/loadFilesUF';
+const ufRegisterFileKeyPath = '/registerFileKeyUF';
 const ufStartPipelinePath = '/startPipelineUF';
 const ufPullWorkspacePath =
     '/pullWorkspaceUF/:key/:workspace_name/:workspace_branch/:feature_branch/:workspace_uri';
@@ -180,6 +182,18 @@ final Map<String, Widget> jetsRoutesMap = {
       },
       tableConfig: getTableConfig(DTKeys.pipelineExecDetailsTable)),
 
+  // Pipeline Execution Stats Details Viewer from cpipes_execution_status_details table
+  executionStatsDetailsPath: ScreenOne(
+      key: const Key(ScreenKeys.execStatsDetailsTable),
+      screenPath: const JetsRouteData(executionStatsDetailsPath),
+      screenConfig: getScreenConfig(ScreenKeys.execStatsDetailsTable),
+      validatorDelegate: (formState, p2, p3, p4) => null,
+      actionsDelegate: (context, formKey, formState, actionKey,
+          {group = 0}) async {
+        return null;
+      },
+      tableConfig: getTableConfig(DTKeys.cpipesExecDetailsTable)),
+
   // Process Errors Viewer
   processErrorsPath: ScreenWithForm(
     key: const Key(ScreenKeys.processErrorsTable),
@@ -224,6 +238,12 @@ final Map<String, Widget> jetsRoutesMap = {
     screenPath: const JetsRouteData(ufLoadFilesPath),
     screenConfig: getScreenConfig(ScreenKeys.ufLoadFiles),
     userFlowConfig: getUserFlowConfig(UserFlowKeys.loadFilesUF),
+  ),
+  ufRegisterFileKeyPath: UserFlowScreen(
+    key: const Key(UserFlowKeys.registerFileKeyUF),
+    screenPath: const JetsRouteData(ufRegisterFileKeyPath),
+    screenConfig: getScreenConfig(ScreenKeys.ufRegisterFileKey),
+    userFlowConfig: getUserFlowConfig(UserFlowKeys.registerFileKeyUF),
   ),
   ufStartPipelinePath: UserFlowScreen(
     key: const Key(UserFlowKeys.startPipelineUF),

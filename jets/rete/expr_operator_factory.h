@@ -49,6 +49,7 @@ ReteMetaStoreFactory::create_binary_expr(int key, ExprBasePtr lhs, std::string c
   if(op == "apply_format")      return create_expr_binary_operator<ApplyFormatVisitor>(key, lhs, rhs);
   if(op == "contains")          return create_expr_binary_operator<ContainsVisitor>(key, lhs, rhs);
   if(op == "starts_with")       return create_expr_binary_operator<StartsWithVisitor>(key, lhs, rhs);
+  if(op == "ends_with")         return create_expr_binary_operator<EndsWithVisitor>(key, lhs, rhs);
   if(op == "substring_of")      return create_expr_binary_operator<SubstringOfVisitor>(key, lhs, rhs);
   if(op == "char_at")           return create_expr_binary_operator<CharAtVisitor>(key, lhs, rhs);
   if(op == "replace_char_of")   return create_expr_binary_operator<ReplaceCharOfVisitor>(key, lhs, rhs);
@@ -89,6 +90,7 @@ ReteMetaStoreFactory::create_unary_expr(int key, std::string const& op, ExprBase
   if(op == "abs")               return create_expr_unary_operator<AbsVisitor>(key, arg);
   if(op == "to_int")            return create_expr_unary_operator<ToIntVisitor>(key, arg);
   if(op == "to_double")         return create_expr_unary_operator<ToDoubleVisitor>(key, arg);
+  if(op == "to_text")           return create_expr_unary_operator<ToTextVisitor>(key, arg);
   
   // Date/Datetime operators
   if(op == "to_timestamp")      return create_expr_unary_operator<ToTimestampVisitor>(key, arg);

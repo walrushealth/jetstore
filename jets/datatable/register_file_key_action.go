@@ -3,31 +3,35 @@ package datatable
 import (
 	"context"
 	"database/sql"
+
+	// "encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
+	"github.com/artisoft-io/jetstore/jets/schema"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
 type RegisterFileKeyAction struct {
-	Action           string                   `json:"action"`
-	Data             []map[string]interface{} `json:"data"`
-	NoAutomatedLoad  bool                     `json:"noAutomatedLoad"`
+	Action          string                   `json:"action"`
+	Data            []map[string]interface{} `json:"data"`
+	NoAutomatedLoad bool                     `json:"noAutomatedLoad"`
+	IsSchemaEvent   bool                     `json:"isSchemaEvent"`
 }
 
 // Function to match the case for client, org, and object_type based on jetstore
 func (ctx *Context) updateFileKeyComponentCase(fileKeyObjectPtr *map[string]interface{}) {
 	fileKeyObject := *fileKeyObjectPtr
 	var err error
+	// log.Println("updateFileKeyComponentCase CALLED:",fileKeyObject)
 
 	// Make sure we have expected values
 	if fileKeyObject["org"] == nil {
@@ -41,7 +45,7 @@ func (ctx *Context) updateFileKeyComponentCase(fileKeyObjectPtr *map[string]inte
 	}
 
 	// Check if vendor is used in place of org
-	if fileKeyObject["vendor"]!= nil && len(fileKeyObject["org"].(string)) == 0 {
+	if fileKeyObject["vendor"] != nil && len(fileKeyObject["org"].(string)) == 0 {
 		fileKeyObject["org"] = fileKeyObject["vendor"]
 	}
 
@@ -73,7 +77,7 @@ func (ctx *Context) updateFileKeyComponentCase(fileKeyObjectPtr *map[string]inte
 			} else {
 				// log.Printf("updateFileKeyComponentCase: client %s, org %s not found in client_org_registry\n", client, org)
 			}
-		}	
+		}
 	}
 	if len(objectType) > 0 {
 		var objectCase string
@@ -83,9 +87,31 @@ func (ctx *Context) updateFileKeyComponentCase(fileKeyObjectPtr *map[string]inte
 			// update object_type with proper case
 			fileKeyObject["object_type"] = objectCase
 		} else {
-			log.Printf("updateFileKeyComponentCase: object_type %s not found in object_type_registry\n", objectType)
+			// log.Printf("updateFileKeyComponentCase: object_type %s not found in object_type_registry\n", objectType)
 		}
 	}
+	log.Println("updateFileKeyComponentCase UPDATED:", fileKeyObject)
+}
+
+var jetsS3SchemaTriggers string = os.Getenv("JETS_s3_SCHEMA_TRIGGERS")
+
+// Submit Schema Event to S3 (which will call RegisterFileKEys as side effect)
+func (ctx *Context) PutSchemaEventToS3(action *RegisterFileKeyAction, token string) (*map[string]interface{}, int, error) {
+	for irow := range action.Data {
+		var schemaProviderJson string
+		e := action.Data[irow]["event"]
+		key := action.Data[irow]["file_key"]
+		if e != nil && key != nil {
+			schemaProviderJson = e.(string)
+			if len(schemaProviderJson) > 0 {
+				err := awsi.UploadBufToS3(fmt.Sprintf("%s/%v", jetsS3SchemaTriggers, key), []byte(schemaProviderJson))
+				if err != nil {
+					return nil, http.StatusInternalServerError, fmt.Errorf("while calling UploadBufToS3: %v", err)
+				}
+			}
+		}
+	}
+	return &map[string]interface{}{}, http.StatusOK, nil
 }
 
 // Register file_key with file_key_staging table
@@ -95,9 +121,12 @@ func (ctx *Context) RegisterFileKeys(registerFileKeyAction *RegisterFileKeyActio
 	if !ok {
 		return nil, http.StatusInternalServerError, errors.New("error cannot find file_key_staging stmt")
 	}
-	sessionId := time.Now().UnixMilli()
+	sentinelFileName := os.Getenv("JETS_SENTINEL_FILE_NAME")
+	baseSessionId := time.Now().UnixMilli()
+	var sessionId string
 	row := make([]interface{}, len(sqlStmt.ColumnKeys))
 	for irow := range registerFileKeyAction.Data {
+		var schemaProviderJson string
 		// fileKeyObject with defaults
 		fileKeyObject := map[string]interface{}{
 			"org":   "",
@@ -123,32 +152,41 @@ func (ctx *Context) RegisterFileKeys(registerFileKeyAction *RegisterFileKeyActio
 			case "size":
 				switch vv := v.(type) {
 				case int:
-					fileKeyObject[k] = int64(vv)
+					fileKeyObject["file_size"] = int64(vv)
 				case int32:
-					fileKeyObject[k] = int64(vv)
+					fileKeyObject["file_size"] = int64(vv)
 				case int64:
-					fileKeyObject[k] = vv
+					fileKeyObject["file_size"] = vv
 				case float64:
-					fileKeyObject[k] = int64(vv)
+					fileKeyObject["file_size"] = int64(vv)
 				case float32:
-					fileKeyObject[k] = int64(vv)
+					fileKeyObject["file_size"] = int64(vv)
 				case string:
-					fileKeyObject[k], err = strconv.ParseInt(vv, 10, 64)
+					fileKeyObject["file_size"], err = strconv.ParseInt(vv, 10, 64)
 					if err != nil {
 						return nil, http.StatusBadRequest, fmt.Errorf("while converting %s (%s) to int64: %v", k, vv, err)
 					}
 				}
+			case "schema_provider_json":
+				schemaProviderJson = v.(string)
 			}
 		}
 		ctx.updateFileKeyComponentCase(&fileKeyObject)
 
-		// Inserting source_period
+		// Inserting source_period, do retry logic in case of a race condition
+		retry := 0
+	do_retry:
 		source_period_key, err := InsertSourcePeriod(
 			ctx.Dbpool,
 			fileKeyObject["year"].(int),
 			fileKeyObject["month"].(int),
 			fileKeyObject["day"].(int))
 		if err != nil {
+			if retry < 4 {
+				time.Sleep(500 * time.Millisecond)
+				retry++
+				goto do_retry
+			}
 			return nil, http.StatusInternalServerError, fmt.Errorf("while calling InsertSourcePeriod: %v", err)
 		}
 		fileKeyObject["source_period_key"] = source_period_key
@@ -160,26 +198,47 @@ func (ctx *Context) RegisterFileKeys(registerFileKeyAction *RegisterFileKeyActio
 		var tableName string
 		var automated int
 		var isPartFile int
+		var hasCpipesSM, hasOtherSM int64
+
 		fileKey := fileKeyObject["file_key"].(string)
 		stmt := "SELECT table_name, automated, is_part_files FROM jetsapi.source_config WHERE client=$1 AND org=$2 AND object_type=$3"
 		allOk := true
 		err = ctx.Dbpool.QueryRow(context.Background(), stmt, client, org, objectType).Scan(&tableName, &automated, &isPartFile)
-		// process if entry found
 		if err == nil {
-			// Multi Part File
+			// process - entry found
+			// log.Printf("*** source_config found, automated: %v, is part file: %v\n", automated, isPartFile)
 			if isPartFile == 1 {
-				size := fileKeyObject["size"].(int64)
+				// Multi Part File
+				size := fileKeyObject["file_size"].(int64)
 				if size > 1 {
 					// log.Println("Register File Key: data source with multiple parts: skipping file key:", fileKeyObject["file_key"],"size",fileKeyObject["size"])
 					goto NextKey
 				} else {
+					// Check if we restrict sentinel files by name
+					if len(sentinelFileName) > 0 && !registerFileKeyAction.IsSchemaEvent &&
+						!strings.HasSuffix(fileKey, sentinelFileName) {
+						// case of accepting only sentinel file with specific name, this one does not have it
+						// log.Println("Register File Key: data source with multiple parts: skipping 0-size file key:", fileKeyObject["file_key"],"size",fileKeyObject["size"],"Do not match the sentinel file name:",sentinelFileName)
+						goto NextKey
+					}
 					// Current key is for sentinel file, remove sentinel file name from file_key
 					idx := strings.LastIndex(fileKey, "/")
 					if idx >= 0 && idx < len(fileKey)-1 {
 						// Removing file name
 						fileKey = (fileKey)[0:idx]
 						fileKeyObject["file_key"] = fileKey
-					}	
+					}
+					// Get the size of the folder as the file_size
+					s3Objs, err := awsi.ListS3Objects("", &fileKey)
+					if err == nil {
+						var size int64
+						for _, obj := range s3Objs {
+							size += obj.Size
+						}
+						fileKeyObject["file_size"] = size
+					} else {
+						log.Printf("Warning, got error while getting s3 folder size: %v\n", err)
+					}
 				}
 			}
 		}
@@ -189,56 +248,124 @@ func (ctx *Context) RegisterFileKeys(registerFileKeyAction *RegisterFileKeyActio
 		for jcol, colKey := range sqlStmt.ColumnKeys {
 			row[jcol], ok = fileKeyObject[colKey]
 			if !ok {
-				allOk = false
+				if colKey == "file_size" {
+					// put the default so it won't error out
+					row[jcol] = int64(0)
+				} else {
+					allOk = false
+					// log.Printf("***RegisterFileKey: Missing column %s in fileKeyObject", colKey)
+				}
 			}
 		}
 		if strings.Contains(fileKey, "/err_") {
+			// Skip error files
 			// log.Println("File key is an error file, skiping")
 			allOk = false
 		}
 		if allOk {
 			_, err = ctx.Dbpool.Exec(context.Background(), sqlStmt.Stmt, row...)
 			if err != nil {
-				return nil, http.StatusInternalServerError, fmt.Errorf("while inserting missing file keys in file_key_staging table: %v", err)
+				return nil, http.StatusInternalServerError, fmt.Errorf("while inserting file keys in file_key_staging table: %v", err)
 			}
 		} else {
-			// log.Println("while SyncFileKeys: skipping file key:", fileKeyObject["file_key"])
+			// log.Println("***while RegisterFileKeys: skipping file key:", fileKeyObject["file_key"])
 			goto NextKey
 		}
-
-		// Start the loader if automated flag is set on source_config table
-		// and if not a test file
-		if strings.Contains(fileKey, "/test_") {
-			// log.Println("File key is test file, skiping the automated load")
-		} else {
-			if !registerFileKeyAction.NoAutomatedLoad && automated > 0 {
-				// to make sure we don't duplicate session_id
-				sessionId += 1
-
-				// insert into input_loader_status and kick off loader (dev mode)
-				dataTableAction := DataTableAction{
-					Action:      "insert_rows",
-					FromClauses: []FromClause{{Schema: "jetsapi", Table: "input_loader_status"}},
+		// If there is an entry in source_config (ie len(tableName) > 0):
+		// 	- Start the loader if hasCpipesSM == 0 and automated flag is set on source_config table and if not a test file
+		//	- Register the file key in input_registry if hasCpipesSM > 0 AND kick off cpipes pipelines ready to start
+		// Check if current objectType is associated with cpipesSM and/or other state machines
+		stmt = `
+        WITH pc AS (
+        	SELECT state_machine_name, unnest(input_rdf_types) as input_rdf_type FROM jetsapi.process_config
+        ),
+        cpipes AS (
+        	SELECT COUNT(*) as has_cpipes FROM jetsapi.object_type_registry AS otr, pc
+        	WHERE pc.input_rdf_type = otr.entity_rdf_type AND otr.object_type = $1 AND pc.state_machine_name = 'cpipesSM'
+        ),
+        other AS (
+        	SELECT COUNT(*) as has_other FROM jetsapi.object_type_registry AS otr, pc
+        	WHERE pc.input_rdf_type = otr.entity_rdf_type AND otr.object_type = $1 AND pc.state_machine_name != 'cpipesSM'
+        )
+        SELECT cpipes.has_cpipes, other.has_other FROM cpipes, other`
+		err = ctx.Dbpool.QueryRow(context.Background(), stmt, objectType).Scan(&hasCpipesSM, &hasOtherSM)
+		if err != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("while determining hasCpipesSM and hasOtherSM: %v", err)
+		}
+		// log.Printf("*** RegisterFileKey for object_type %s, having cpipesSM: %d and other SM: %d", objectType, hasCpipesSM, hasOtherSM)
+		// Reserve a session_id
+		sessionId, err = reserveSessionId(ctx.Dbpool, &baseSessionId)
+		if err != nil {
+			return nil, http.StatusInternalServerError, err
+		}
+		switch {
+		case hasCpipesSM == 0 && automated > 0 && !strings.Contains(fileKey, "/test_") && !registerFileKeyAction.NoAutomatedLoad:
+			// insert into input_loader_status and kick off loader
+			dataTableAction := DataTableAction{
+				Action:      "insert_rows",
+				FromClauses: []FromClause{{Schema: "jetsapi", Table: "input_loader_status"}},
+				Data: []map[string]interface{}{{
+					"file_key":              fileKey,
+					"table_name":            tableName,
+					"client":                client,
+					"org":                   org,
+					"object_type":           objectType,
+					"session_id":            sessionId,
+					"source_period_key":     source_period_key,
+					"status":                "submitted",
+					"user_email":            "system",
+					"loaderCompletedMetric": "autoLoaderCompleted",
+					"loaderFailedMetric":    "autoLoaderFailed",
+				}}}
+			_, httpStatus, err := ctx.InsertRows(&dataTableAction, token)
+			if err != nil {
+				return nil, httpStatus, fmt.Errorf("while starting loader automatically for key %s: %v", fileKey, err)
+			}
+		case hasCpipesSM > 0:
+			// Insert into input registry (essentially we are bypassing loader here by registering the fileKey
+			// and invoke StartPipelineOnInputRegistryInsert)
+			var inputRegistryKey int
+			log.Println("Write to input_registry for cpipes input files object type:", objectType, "client", client, "org", org)
+			// log.Println("Write to input_registry for cpipes with schemaProviderJson:", schemaProviderJson)
+			stmt = `INSERT INTO jetsapi.input_registry 
+							(client, org, object_type, file_key, source_period_key, table_name, 
+							 source_type, session_id, user_email, schema_provider_json
+							)	VALUES ($1, $2, $3, $4, $5, $6, 'file', $7, 'system', $8) 
+							ON CONFLICT DO NOTHING
+							RETURNING key`
+			err = ctx.Dbpool.QueryRow(context.Background(), stmt,
+				client, org, objectType, fileKey, source_period_key, tableName, sessionId, schemaProviderJson).Scan(&inputRegistryKey)
+			if err != nil {
+				return nil, http.StatusInternalServerError, fmt.Errorf("error inserting in jetsapi.input_registry table: %v", err)
+			}
+			// //***
+			// log.Println("Read back the schema provider from in_registry with key", inputRegistryKey)
+			// var xxx string
+			// ctx.Dbpool.QueryRow(context.Background(), "select schema_provider_json from jetsapi.input_registry where key=$1", inputRegistryKey).Scan(&xxx)
+			// log.Println(xxx)
+			// //***
+			if !strings.Contains(fileKey, "/test_") && !registerFileKeyAction.NoAutomatedLoad {
+				// Check for any process that are ready to kick off
+				ctx.StartPipelineOnInputRegistryInsert(&RegisterFileKeyAction{
+					Action: "register_keys",
 					Data: []map[string]interface{}{{
-						"file_key":              fileKey,
-						"table_name":            tableName,
-						"client":                client,
-						"org":                   org,
-						"object_type":           objectType,
-						"session_id":            strconv.FormatInt(sessionId, 10),
-						"source_period_key":     source_period_key,
-						"status":                "submitted",
-						"user_email":            "system",
-						"loaderCompletedMetric": "autoLoaderCompleted",
-						"loaderFailedMetric":    "autoLoaderFailed",
-					}}}
-				_, httpStatus, err := ctx.InsertRows(&dataTableAction, token)
-				if err != nil {
-					return nil, httpStatus, fmt.Errorf("while starting loader automatically for key %s: %v", fileKey, err)
-				}
+						"input_registry_keys": []int{inputRegistryKey},
+						"source_period_key":   source_period_key,
+						"file_key":            fileKey,
+						"client":              client,
+						"state_machine":       "cpipesSM", //TODO use this as filter to only start cpipes pipeline
+					}},
+				}, token)
+			}
+			// for completness register the session_id
+			err = schema.RegisterSession(ctx.Dbpool, "file", client.(string), sessionId, source_period_key)
+			if err != nil {
+				log.Println("Error while registering session_id")
+				err = nil
 			}
 		}
-		NextKey:
+
+	NextKey:
 	}
 	return &map[string]interface{}{}, http.StatusOK, nil
 }
@@ -246,7 +373,7 @@ func (ctx *Context) RegisterFileKeys(registerFileKeyAction *RegisterFileKeyActio
 // Load All Files for client/org/object_type from a given day_period
 func (ctx *Context) LoadAllFiles(registerFileKeyAction *RegisterFileKeyAction, token string) (*map[string]interface{}, int, error) {
 	var err error
-	sessionId := time.Now().UnixMilli()
+	baseSessionId := time.Now().UnixMilli()
 	for irow := range registerFileKeyAction.Data {
 
 		// Get the staging table name
@@ -256,8 +383,7 @@ func (ctx *Context) LoadAllFiles(registerFileKeyAction *RegisterFileKeyAction, t
 		fromSourcePeriodKey := registerFileKeyAction.Data[irow]["from_source_period_key"]
 		toSourcePeriodKey := registerFileKeyAction.Data[irow]["to_source_period_key"]
 		userEmail := registerFileKeyAction.Data[irow]["user_email"]
-		// //DEV
-		// fmt.Println("**** LoadAllFiles called with client",client, org,"objectType",objectType,"userEmail",userEmail)
+		// log.Println("**** LoadAllFiles called with client",client, org,"objectType",objectType,"userEmail",userEmail)
 		var tableName string
 		stmt := `
 			SELECT table_name
@@ -303,7 +429,7 @@ func (ctx *Context) LoadAllFiles(registerFileKeyAction *RegisterFileKeyAction, t
 			// scan the row
 			if err = rows.Scan(&fkey, &pkey); err != nil {
 				return nil, http.StatusInternalServerError,
-				fmt.Errorf("in LoadAllFiles while scanning all file keys to load: %v", err)
+					fmt.Errorf("in LoadAllFiles while scanning all file keys to load: %v", err)
 			}
 			fileKeys = append(fileKeys, fkey)
 			sourcePeriodKeys = append(sourcePeriodKeys, strconv.Itoa(pkey))
@@ -315,18 +441,21 @@ func (ctx *Context) LoadAllFiles(registerFileKeyAction *RegisterFileKeyAction, t
 		dataTableAction := DataTableAction{
 			Action:      "insert_rows",
 			FromClauses: []FromClause{{Schema: "jetsapi", Table: "input_loader_status"}},
-			Data: make([]map[string]interface{}, 0),
-		}		
+			Data:        make([]map[string]interface{}, 0),
+		}
 		for i := range fileKeys {
-			// Make sure we don't duplicate session_id
-			sessionId += 1
+			// Reserve a session_id
+			sessionId, err := reserveSessionId(ctx.Dbpool, &baseSessionId)
+			if err != nil {
+				return nil, http.StatusInternalServerError, err
+			}
 			dataTableAction.Data = append(dataTableAction.Data, map[string]interface{}{
 				"file_key":              fileKeys[i],
 				"table_name":            tableName,
 				"client":                client,
 				"org":                   org,
 				"object_type":           objectType,
-				"session_id":            strconv.FormatInt(sessionId, 10),
+				"session_id":            sessionId,
 				"source_period_key":     sourcePeriodKeys[i],
 				"status":                "submitted",
 				"user_email":            userEmail,
@@ -495,7 +624,7 @@ func PipelineConfigReady2Execute(dbpool *pgxpool.Pool, processInputKeys *[]int, 
 //   - find processes that are ready to start with one of the input input_registry key.
 //   - Pipeline must have automated flag on
 func (ctx *Context) StartPipelineOnInputRegistryInsert(registerFileKeyAction *RegisterFileKeyAction, token string) (*[]map[string]interface{}, int, error) {
-	// // DEV
+	// // // DEV
 	// fmt.Println("StartPipelineOnInputRegistryInsert called with registerFileKeyAction:", *registerFileKeyAction)
 
 	results := make([]map[string]interface{}, 0)
@@ -528,7 +657,7 @@ func (ctx *Context) StartPipelineOnInputRegistryInsert(registerFileKeyAction *Re
 			err2 := fmt.Errorf("in StartPipelineOnInputRegistryInsert while querying matching process_input keys: %v", err)
 			return nil, http.StatusInternalServerError, err2
 		}
-		// // DEV
+		// DEV
 		// fmt.Println("Found matching processInputKeys:", *processInputKeys)
 
 		if len(*processInputKeys) == 0 {
@@ -541,7 +670,7 @@ func (ctx *Context) StartPipelineOnInputRegistryInsert(registerFileKeyAction *Re
 			err2 := fmt.Errorf("in StartPipelineOnInputRegistryInsert while querying matching pipeline_config keys: %v", err)
 			return nil, http.StatusInternalServerError, err2
 		}
-		// // DEV
+		// DEV
 		// fmt.Println("Found any matching pipelineConfigKeys:", *pipelineConfigKeys)
 
 		if len(*pipelineConfigKeys) == 0 {
@@ -555,7 +684,7 @@ func (ctx *Context) StartPipelineOnInputRegistryInsert(registerFileKeyAction *Re
 			err2 := fmt.Errorf("in StartPipelineOnInputRegistryInsert while querying all process_input in source_period_key: %v", err)
 			return nil, http.StatusInternalServerError, err2
 		}
-		// // DEV
+		// DEV
 		// fmt.Println("Found matching processInputKeys where source_period_key = sourcePeriodKey:", *processInputKeys)
 
 		if len(*processInputKeys) == 0 {
@@ -568,8 +697,8 @@ func (ctx *Context) StartPipelineOnInputRegistryInsert(registerFileKeyAction *Re
 			err2 := fmt.Errorf("in StartPipelineOnInputRegistryInsert while querying all pipeline_config ready to execute: %v", err)
 			return nil, http.StatusInternalServerError, err2
 		}
-		// // DEV
-		// fmt.Println("Found all pipeline_config ready to go:", *pipelineConfigKeys)
+
+		// fmt.Println("Found all pipeline_config ready to go:", *pipelineConfigKeys) // DEV
 
 		if len(*pipelineConfigKeys) == 0 {
 			return &[]map[string]interface{}{}, http.StatusOK, nil
@@ -578,11 +707,16 @@ func (ctx *Context) StartPipelineOnInputRegistryInsert(registerFileKeyAction *Re
 		// Get details of the pipeline_config that are ready to execute to make entries in pipeline_execution_status
 		payload := make([]map[string]interface{}, 0)
 		baseSessionId := time.Now().UnixMilli()
-		for i, pcKey := range *pipelineConfigKeys {
+		for _, pcKey := range *pipelineConfigKeys {
+			// Reserve a session_id
+			sessionId, err := reserveSessionId(ctx.Dbpool, &baseSessionId)
+			if err != nil {
+				return nil, http.StatusInternalServerError, err
+			}
 			data := map[string]interface{}{
 				"pipeline_config_key":   strconv.Itoa(pcKey),
 				"input_session_id":      nil,
-				"session_id":            strconv.FormatInt(baseSessionId + int64(i), 10),
+				"session_id":            sessionId,
 				"source_period_key":     sourcePeriodKey,
 				"status":                "submitted",
 				"user_email":            "system",
@@ -619,7 +753,7 @@ func (ctx *Context) StartPipelineOnInputRegistryInsert(registerFileKeyAction *Re
 				return nil, http.StatusInternalServerError,
 					fmt.Errorf("in StartPipelineOnInputRegistryInsert while querying pipeline_config to start a pipeline: %v", err)
 			}
-			// // DEV
+			// DEV
 			// fmt.Println("GOT pipeline_config w/ main_input_registry_key for execution:")
 			// fmt.Printf("*pcKey: %d, process_name: %s, client: %s, main_input_registry_key: %d, file_key: %s, main_object_type: %s, merged_process_input_keys: %v\n",
 			// 	pcKey, process_name, client, main_input_registry_key, file_key.String, main_object_type, merged_process_input_keys)
@@ -645,7 +779,7 @@ func (ctx *Context) StartPipelineOnInputRegistryInsert(registerFileKeyAction *Re
 				}
 				merged_input_registry_keys[ipos] = irKey
 			}
-			// // DEV
+			// DEV
 			// fmt.Printf("GOT corresponding merged_input_registry_keys: %v\n", merged_input_registry_keys)
 
 			data["process_name"] = process_name
@@ -666,13 +800,39 @@ func (ctx *Context) StartPipelineOnInputRegistryInsert(registerFileKeyAction *Re
 			FromClauses: []FromClause{{Schema: "jetsapi", Table: "pipeline_execution_status"}},
 			Data:        payload,
 		}
+		// v, _ := json.Marshal(dataTableAction)
+		// fmt.Println("***@@** Calling InsertRow to start pipeline with dataTableAction", string(v))
 		result, httpStatus, err := ctx.InsertRows(&dataTableAction, token)
 		if err != nil {
+			log.Printf("while calling InsertRow for starting pipeline in StartPipelineOnInputRegistryInsert: %v", err)
 			return nil, httpStatus, fmt.Errorf("while starting pipeline in StartPipelineOnInputRegistryInsert: %v", err)
 		}
 		results = append(results, *result)
 	}
 	return &results, http.StatusOK, nil
+}
+
+// Reserve a session_id by inserting a row in table jetsapi.session_reservation
+// returns the string version of baseSessionId if it successfully reserve it,
+// otherwize baseSessionId + 1 until it succeed (will make 100 attemps before giving up)
+// baseSessionId is updated to match the returned session_id + 1
+func reserveSessionId(dbpool *pgxpool.Pool, baseSessionId *int64) (string, error) {
+	stmt := "INSERT INTO jetsapi.session_reservation (session_id) VALUES ($1)"
+	retry := 0
+do_retry:
+	sessionId := strconv.FormatInt(*baseSessionId, 10)
+	_, err := dbpool.Exec(context.Background(), stmt, sessionId)
+	if err != nil {
+		if retry < 1000 {
+			time.Sleep(500 * time.Millisecond)
+			retry++
+			*baseSessionId += 1
+			goto do_retry
+		}
+		return "", fmt.Errorf("error: failed to reserve a session id")
+	}
+	*baseSessionId += 1
+	return sessionId, nil
 }
 
 func splitFileKey(keyMap map[string]interface{}, fileKey *string) map[string]interface{} {
@@ -685,43 +845,41 @@ func splitFileKey(keyMap map[string]interface{}, fileKey *string) map[string]int
 					keyMap["org"] = elms[1]
 				}
 			}
-		}	
+		}
 	}
 	return keyMap
 }
 
 func SplitFileKeyIntoComponents(keyMap map[string]interface{}, fileKey *string) map[string]interface{} {
-
+	var err error
 	fileKeyObject := splitFileKey(keyMap, fileKey)
 	fileKeyObject["file_key"] = *fileKey
-	year, err := strconv.Atoi(fileKeyObject["year"].(string))
-	if err != nil {
-		log.Printf("File Key with invalid year: %s, setting to 1970\n", fileKeyObject["year"])
-		year = 1970
+	year := 1970
+	if fileKeyObject["year"] != nil {
+		year, err = strconv.Atoi(fileKeyObject["year"].(string))
+		if err != nil {
+			log.Printf("File Key with invalid year: %s, setting to 1970", fileKeyObject["year"])
+		}
 	}
-	month, err := strconv.Atoi(fileKeyObject["month"].(string))
-	if err != nil {
-		log.Printf("File Key with invalid month: %s, setting to 1\n", fileKeyObject["year"])
-		year = 1
+	month := 1
+	if fileKeyObject["month"] != nil {
+		month, err = strconv.Atoi(fileKeyObject["month"].(string))
+		if err != nil {
+			log.Printf("File Key with invalid month: %s, setting to 1", fileKeyObject["month"])
+		}
 	}
-	day, err := strconv.Atoi(fileKeyObject["day"].(string))
-	if err != nil {
-		log.Printf("File Key with invalid day: %s, setting to 1\n", fileKeyObject["year"])
-		year = 1
+	day := 1
+	if fileKeyObject["day"] != nil {
+		day, err = strconv.Atoi(fileKeyObject["day"].(string))
+		if err != nil {
+			log.Printf("File Key with invalid day: %s, setting to 1", fileKeyObject["day"])
+		}
 	}
 	// Updating object attribute with correct type
 	fileKeyObject["year"] = year
 	fileKeyObject["month"] = month
 	fileKeyObject["day"] = day
 	return fileKeyObject
-}
-
-
-func AsString(i interface{}) string {
-	if i != nil && reflect.TypeOf(i).Kind() == reflect.String {
-		return i.(string)
-	}
-	return ""
 }
 
 // SyncFileKeys ------------------------------------------------------
@@ -738,7 +896,7 @@ func (ctx *Context) SyncFileKeys(registerFileKeyAction *RegisterFileKeyAction, t
 		prefix = &p
 	}
 
-	keys, err := awsi.ListS3Objects(prefix, os.Getenv("JETS_BUCKET"), os.Getenv("JETS_REGION"))
+	keys, err := awsi.ListS3Objects("", prefix)
 	if err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("while calling awsi.ListS3Objects: %v", err)
 	}
@@ -765,8 +923,8 @@ func (ctx *Context) SyncFileKeys(registerFileKeyAction *RegisterFileKeyAction, t
 	// Delegating to RegisterFileKeys for inserting into db
 	log.Printf("Registring %d file keys with file_key_staging table", len(s3Lookup))
 	registerFileKeyDelegateAction := &RegisterFileKeyAction{
-		Action: "register_keys",
-		Data: make([]map[string]interface{}, 0),
+		Action:          "register_keys",
+		Data:            make([]map[string]interface{}, 0),
 		NoAutomatedLoad: true,
 	}
 	for s3Key, s3Obj := range s3Lookup {
@@ -776,7 +934,7 @@ func (ctx *Context) SyncFileKeys(registerFileKeyAction *RegisterFileKeyAction, t
 			"year":  "1970",
 			"month": "1",
 			"day":   "1",
-			"size": s3Obj.Size,
+			"size":  s3Obj.Size,
 		}
 		// Split fileKey into components and then in it's elements
 		fileKeyObject = SplitFileKeyIntoComponents(fileKeyObject, &s3Key)

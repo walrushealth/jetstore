@@ -2,6 +2,7 @@ import 'package:jetsclient/modules/user_flows/client_registry/screen_config.dart
 import 'package:jetsclient/modules/user_flows/configure_files/screen_config.dart';
 import 'package:jetsclient/modules/user_flows/file_mapping/screen_config.dart';
 import 'package:jetsclient/modules/user_flows/load_files/screen_config.dart';
+import 'package:jetsclient/modules/user_flows/register_file_key/screen_config.dart';
 import 'package:jetsclient/modules/user_flows/pipeline_config/screen_config.dart';
 import 'package:jetsclient/modules/user_flows/start_pipeline/screen_config.dart';
 import 'package:jetsclient/modules/user_flows/workspace_pull/screen_config.dart';
@@ -83,7 +84,7 @@ final adminMenuEntries = [
   MenuEntry(
       otherPageStyle: ActionStyle.danger,
       key: 'runInitDb',
-      label: 'Run Workspace Database Initialization',
+      label: 'Run Workspace DB Base Initialization',
       menuAction: rerunDbInitAction),
 ];
 
@@ -111,6 +112,10 @@ final toolbarMenuEntries = [
       key: 'loaderUF',
       label: 'Load Files',
       routePath: ufLoadFilesPath),
+  MenuEntry(
+      key: 'registerKeyUF',
+      label: 'Put Schema Event',
+      routePath: ufRegisterFileKeyPath),
   MenuEntry(
       key: 'startPipelineUF',
       label: 'Start Pipeline',
@@ -289,6 +294,16 @@ final Map<String, ScreenConfig> _screenConfigurations = {
       adminMenuEntries: adminMenuEntries,
       toolbarMenuEntries: toolbarMenuEntries),
 
+  ScreenKeys.execStatsDetailsTable: ScreenConfig(
+      key: ScreenKeys.execStatsDetailsTable,
+      appBarLabel: 'JetStore Workspace',
+      // title: 'Pipeline Execution Details',
+      showLogout: true,
+      leftBarLogo: 'assets/images/logo.png',
+      menuEntries: defaultMenuEntries,
+      adminMenuEntries: adminMenuEntries,
+      toolbarMenuEntries: toolbarMenuEntries),
+
   ScreenKeys.processErrorsTable: ScreenConfig(
       key: ScreenKeys.processErrorsTable,
       appBarLabel: 'JetStore Workspace',
@@ -314,6 +329,8 @@ ScreenConfig getScreenConfig(String key) {
   config = getPipelineConfigScreenConfig(key);
   if (config != null) return config;
   config = getLoadFilesScreenConfig(key);
+  if (config != null) return config;
+  config = getRegisterFileKeyScreenConfig(key);
   if (config != null) return config;
   config = getStartPipelineScreenConfig(key);
   if (config != null) return config;

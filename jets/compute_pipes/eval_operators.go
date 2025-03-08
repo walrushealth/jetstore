@@ -2,50 +2,61 @@ package compute_pipes
 
 import (
 	"fmt"
-	"log"
 	"math"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/artisoft-io/jetstore/jets/jetrules/rdf"
 )
 
 // build the runtime evaluator for the column transformation
-func (ctx *BuilderContext) buildEvalOperator(op string) (evalOperator, error) {
+func BuildEvalOperator(op string) (evalOperator, error) {
 
 	switch strings.ToUpper(op) {
 	// Boolean operators
 	case "==":
-		return opEqual{}, nil
+		return &opEqual{}, nil
 	case "!=":
-		return opNotEqual{}, nil
+		return &opNotEqual{}, nil
 	case "IS":
-		return opIS{}, nil
+		return &opIS{}, nil
 	case "<":
-		return opLT{}, nil
+		return &opLT{}, nil
 	case "<=":
-		return opLE{}, nil
+		return &opLE{}, nil
 	case ">":
-		return opGT{}, nil
+		return &opGT{}, nil
 	case ">=":
-		return opGE{}, nil
-	case "NOT":	// unary op
-		return opNot{}, nil
+		return &opGE{}, nil
+	case "AND":
+		return &opAND{}, nil
+	case "OR":
+		return &opOR{}, nil
+	case "NOT": // unary op
+		return &opNot{}, nil
 	// Arithemtic operators
 	case "/":
-		return opDIV{}, nil
+		return &opDIV{}, nil
 	case "+":
-		return opADD{}, nil
+		return &opADD{}, nil
 	case "-":
-		return opSUB{}, nil
+		return &opSUB{}, nil
 	case "*":
-		return opMUL{}, nil
+		return &opMUL{}, nil
 	case "ABS":
-		return opABS{}, nil
-	// Special Operators
+		return &opABS{}, nil
+		// Special Operators
+	case "IN":
+		return &opIn{}, nil
+	case "LENGTH":
+		return &opLength{}, nil
 	case "DISTANCE_MONTHS":
-		return opDMonths{}, nil
+		return &opDMonths{}, nil
 	case "APPLY_FORMAT":
-		return opApplyFormat{}, nil
+		return &opApplyFormat{}, nil
+	case "APPLY_REGEX":
+		return &opApplyRegex{}, nil
 	}
 	return nil, fmt.Errorf("error: unknown operator: %v", op)
 }
@@ -62,6 +73,8 @@ func ToBool(b interface{}) bool {
 		return v > 0
 	case float64:
 		return v > 0
+	case float32:
+		return v > 0
 	}
 	return false
 }
@@ -76,12 +89,16 @@ func ToDouble(d interface{}) (float64, error) {
 		return float64(v), nil
 	case float64:
 		return v, nil
+	case float32:
+		return float64(v), nil
 	}
 	return 0, fmt.Errorf("invalid data: not a double: %v", d)
 }
 
-type opEqual struct {}
-func (op opEqual) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+// Operator ==
+type opEqual struct{}
+
+func (op *opEqual) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	if lhs == nil || rhs == nil {
 		return 0, nil
 	}
@@ -109,14 +126,14 @@ func (op opEqual) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 			if err != nil {
 				return nil, fmt.Errorf("opEqual string and double, string not a double")
 			}
-			if nearlyEqual(v, rhsv) {
+			if rdf.NearlyEqual(v, rhsv) {
 				return 1, nil
 			}
 			return 0, nil
 		case time.Time:
 			return nil, fmt.Errorf("opEqual string and datetime, rejected")
 		}
-	
+
 	case int:
 		switch rhsv := rhs.(type) {
 		case string:
@@ -136,7 +153,7 @@ func (op opEqual) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 			return 0, nil
 
 		case float64:
-			if nearlyEqual(float64(lhsv), rhsv) {
+			if rdf.NearlyEqual(float64(lhsv), rhsv) {
 				return 1, nil
 			}
 			return 0, nil
@@ -163,7 +180,7 @@ func (op opEqual) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 			return 0, nil
 
 		case float64:
-			if nearlyEqual(float64(lhsv), rhsv) {
+			if rdf.NearlyEqual(float64(lhsv), rhsv) {
 				return 1, nil
 			}
 			return 0, nil
@@ -178,23 +195,23 @@ func (op opEqual) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 			if err != nil {
 				return nil, fmt.Errorf("opEqual double and string, string not a double")
 			}
-			if nearlyEqual(v, lhsv) {
+			if rdf.NearlyEqual(v, lhsv) {
 				return 1, nil
 			}
 			return 0, nil
 		case int:
-			if nearlyEqual(lhsv, float64(rhsv)) {
+			if rdf.NearlyEqual(lhsv, float64(rhsv)) {
 				return 1, nil
 			}
 			return 0, nil
 		case int64:
-			if nearlyEqual(lhsv, float64(rhsv)) {
+			if rdf.NearlyEqual(lhsv, float64(rhsv)) {
 				return 1, nil
 			}
 			return 0, nil
 
 		case float64:
-			if nearlyEqual(lhsv, rhsv) {
+			if rdf.NearlyEqual(lhsv, rhsv) {
 				return 1, nil
 			}
 			return 0, nil
@@ -215,14 +232,15 @@ func (op opEqual) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 }
 
 // Operator !=
-type opNotEqual struct {}
-func (op opNotEqual) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+type opNotEqual struct{}
+
+func (op *opNotEqual) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	if lhs == nil || rhs == nil {
 		return 0, nil
 	}
-	v, err := opEqual{}.eval(lhs, rhs)
+	v, err := (&opEqual{}).eval(lhs, rhs)
 	if err != nil {
-		return nil, fmt.Errorf("opNotEqual eval using opEqual: %v", err)	
+		return nil, fmt.Errorf("opNotEqual eval using opEqual: %v", err)
 	}
 	switch vv := v.(type) {
 	case int:
@@ -235,10 +253,50 @@ func (op opNotEqual) eval(lhs interface{}, rhs interface{}) (interface{}, error)
 	return nil, fmt.Errorf("opNotEqual incompatible types, rejected")
 }
 
+// Operator AND
+type opAND struct{}
+
+func (op *opAND) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+	if lhs == nil || rhs == nil {
+		return 0, nil
+	}
+	switch lhsv := lhs.(type) {
+	case int:
+		switch rhsv := rhs.(type) {
+		case int:
+			if lhsv == rhsv && lhsv == 1 {
+				return 1, nil
+			}
+			return 0, nil
+		}
+	}
+	return nil, fmt.Errorf("opAND incompatible types, rejected")
+}
+
+// Operator OR
+type opOR struct{}
+
+func (op *opOR) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+	if lhs == nil || rhs == nil {
+		return 0, nil
+	}
+	switch lhsv := lhs.(type) {
+	case int:
+		switch rhsv := rhs.(type) {
+		case int:
+			if lhsv == 1 || rhsv == 1 {
+				return 1, nil
+			}
+			return 0, nil
+		}
+	}
+	return nil, fmt.Errorf("opOR incompatible types, rejected")
+}
 
 // Boolean not
-type opNot struct {}
-func (op opNot) eval(lhs interface{}, _ interface{}) (interface{}, error) {
+type opNot struct{}
+
+func (op *opNot) eval(lhs interface{}, _ interface{}) (interface{}, error) {
 	if lhs == nil {
 		return nil, nil
 	}
@@ -265,9 +323,9 @@ func (op opNot) eval(lhs interface{}, _ interface{}) (interface{}, error) {
 	return nil, fmt.Errorf("opNot incompatible types, rejected")
 }
 
+type opIS struct{}
 
-type opIS struct {}
-func (op opIS) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opIS) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	if lhs == nil && rhs == nil {
 		return 1, nil
 	}
@@ -275,7 +333,7 @@ func (op opIS) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	case float64:
 		switch rhsv := rhs.(type) {
 		case float64:
-			if(math.IsNaN(lhsv) && math.IsNaN(rhsv)) {
+			if math.IsNaN(lhsv) && math.IsNaN(rhsv) {
 				return 1, nil
 			}
 		}
@@ -283,9 +341,138 @@ func (op opIS) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	return 0, nil
 }
 
+// This cmpInt64 is not guaranteed to be stable.
+// cmp(a, b) should return a negative number when a < b,
+// a positive number when a > b and
+// zero when a == b or
+// a and b are incomparable in the sense of a strict weak ordering.
+func cmpInt64(l, r int64) int {
+	switch {
+	case l < r:
+		return -1
+	case l > r:
+		return 1
+	default:
+		return 0
+	}
+}
+// This cmpFloat64 is not guaranteed to be stable.
+// cmp(a, b) should return a negative number when a < b,
+// a positive number when a > b and
+// zero when a == b or
+// a and b are incomparable in the sense of a strict weak ordering.
+func cmpFloat64(l, r float64) int {
+	switch {
+	case l < r:
+		return -1
+	case l > r:
+		return 1
+	default:
+		return 0
+	}
+}
 
-type opLT struct {}
-func (op opLT) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+// *TODO Migrate to this cmp function
+// satisfy sort.SortFunc:
+// SortFunc sorts the slice x in ascending order as determined by the cmp function.
+// This sort is not guaranteed to be stable.
+// cmp(a, b) should return a negative number when a < b,
+// a positive number when a > b and
+// zero when a == b or
+// a and b are incomparable in the sense of a strict weak ordering.
+// SortFunc requires that cmp is a strict weak ordering.
+// See https://en.wikipedia.org/wiki/Weak_ordering#Strict_weak_orderings.
+// The function should return 0 for incomparable items.
+func CmpRecord(lhs any, rhs any) int {
+	var err error
+	if lhs == nil || rhs == nil {
+		return 0
+	}
+	switch lhsv := lhs.(type) {
+	case string:
+		switch rhsv := rhs.(type) {
+		case string:
+			return strings.Compare(lhsv, rhsv)
+		default:
+			vv := fmt.Sprintf("%v", rhsv)
+			return strings.Compare(lhsv, vv)
+		}
+
+	case int:
+		var vv int64
+		switch rhsv := rhs.(type) {
+		case string:
+			vv, err = strconv.ParseInt(rhsv, 10, 64)
+			if err != nil {
+				return 0
+			}
+		case int:
+			vv = int64(rhsv)
+		case int64:
+			vv = rhsv
+		case float64:
+			vv = int64(rhsv)
+		case time.Time:
+			vv = rhsv.Unix()
+		}
+		return cmpInt64(int64(lhsv), vv)
+
+	case int64:
+		var vv int64
+		switch rhsv := rhs.(type) {
+		case string:
+			vv, err = strconv.ParseInt(rhsv, 10, 64)
+			if err != nil {
+				return 0
+			}
+		case int:
+			vv = int64(rhsv)
+		case int64:
+			vv = rhsv
+		case float64:
+			vv = int64(rhsv)
+		case time.Time:
+			vv = rhsv.Unix()
+		}
+		return cmpInt64(lhsv, vv)
+
+	case float64:
+		var vv float64
+		switch rhsv := rhs.(type) {
+		case string:
+			vv, err = strconv.ParseFloat(rhsv, 64)
+			if err != nil {
+				return 0
+			}
+		case int:
+			vv = float64(rhsv)
+		case int64:
+			vv = float64(rhsv)
+		case float64:
+			vv =rhsv 
+		case time.Time:
+			vv = float64(rhsv.Unix())
+		}
+		return cmpFloat64(lhsv, vv)
+
+	case time.Time:
+		switch rhsv := rhs.(type) {
+		case time.Time:
+			return lhsv.Compare(rhsv)
+		case int:
+			return cmpInt64(lhsv.Unix(), int64(rhsv))
+		case int64:
+			return cmpInt64(lhsv.Unix(), rhsv)
+		case float64:
+			return cmpFloat64(float64(lhsv.Unix()), rhsv)
+		}
+	}
+	return 0
+}
+
+type opLT struct{}
+
+func (op *opLT) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	if lhs == nil || rhs == nil {
 		return 0, nil
 	}
@@ -328,7 +515,7 @@ func (op opLT) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 		case time.Time:
 			return nil, fmt.Errorf("opLT string and datetime, rejected")
 		}
-	
+
 	case int:
 		switch rhsv := rhs.(type) {
 		case string:
@@ -434,9 +621,9 @@ func (op opLT) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	return nil, fmt.Errorf("opLT incompatible types, rejected")
 }
 
+type opLE struct{}
 
-type opLE struct {}
-func (op opLE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opLE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	if lhs == nil || rhs == nil {
 		return 0, nil
 	}
@@ -472,14 +659,14 @@ func (op opLE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 			if err != nil {
 				return nil, fmt.Errorf("opLE string and double, string not a double")
 			}
-			if v < rhsv || nearlyEqual(v, rhsv) {
+			if v < rhsv || rdf.NearlyEqual(v, rhsv) {
 				return 1, nil
 			}
 			return 0, nil
 		case time.Time:
 			return nil, fmt.Errorf("opLE string and datetime, rejected")
 		}
-	
+
 	case int:
 		switch rhsv := rhs.(type) {
 		case string:
@@ -504,7 +691,7 @@ func (op opLE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 
 		case float64:
 			v := float64(lhsv)
-			if v < rhsv || nearlyEqual(v, rhsv) {
+			if v < rhsv || rdf.NearlyEqual(v, rhsv) {
 				return 1, nil
 			}
 			return 0, nil
@@ -536,7 +723,7 @@ func (op opLE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 
 		case float64:
 			v := float64(lhsv)
-			if v < rhsv || nearlyEqual(v, rhsv) {
+			if v < rhsv || rdf.NearlyEqual(v, rhsv) {
 				return 1, nil
 			}
 			return 0, nil
@@ -551,25 +738,25 @@ func (op opLE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 			if err != nil {
 				return nil, fmt.Errorf("opLE double and string, string not a double")
 			}
-			if v < lhsv || nearlyEqual(v, lhsv) {
+			if v < lhsv || rdf.NearlyEqual(v, lhsv) {
 				return 1, nil
 			}
 			return 0, nil
 		case int:
 			v := float64(rhsv)
-			if lhsv < v || nearlyEqual(v, lhsv) {
+			if lhsv < v || rdf.NearlyEqual(v, lhsv) {
 				return 1, nil
 			}
 			return 0, nil
 		case int64:
 			v := float64(rhsv)
-			if lhsv < v || nearlyEqual(v, lhsv) {
+			if lhsv < v || rdf.NearlyEqual(v, lhsv) {
 				return 1, nil
 			}
 			return 0, nil
 
 		case float64:
-			if lhsv <= rhsv || nearlyEqual(lhsv, rhsv) {
+			if lhsv <= rhsv || rdf.NearlyEqual(lhsv, rhsv) {
 				return 1, nil
 			}
 			return 0, nil
@@ -589,9 +776,9 @@ func (op opLE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	return nil, fmt.Errorf("opLE incompatible types, rejected")
 }
 
+type opGT struct{}
 
-type opGT struct {}
-func (op opGT) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opGT) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	if lhs == nil || rhs == nil {
 		return 0, nil
 	}
@@ -634,7 +821,7 @@ func (op opGT) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 		case time.Time:
 			return nil, fmt.Errorf("opGT string and datetime, rejected")
 		}
-	
+
 	case int:
 		switch rhsv := rhs.(type) {
 		case string:
@@ -740,9 +927,9 @@ func (op opGT) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	return nil, fmt.Errorf("opGT incompatible types, rejected")
 }
 
+type opGE struct{}
 
-type opGE struct {}
-func (op opGE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opGE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	if lhs == nil || rhs == nil {
 		return 0, nil
 	}
@@ -778,14 +965,14 @@ func (op opGE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 			if err != nil {
 				return nil, fmt.Errorf("opGE string and double, string not a double")
 			}
-			if v > rhsv || nearlyEqual(v, rhsv) {
+			if v > rhsv || rdf.NearlyEqual(v, rhsv) {
 				return 1, nil
 			}
 			return 0, nil
 		case time.Time:
 			return nil, fmt.Errorf("opGE string and datetime, rejected")
 		}
-	
+
 	case int:
 		switch rhsv := rhs.(type) {
 		case string:
@@ -810,7 +997,7 @@ func (op opGE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 
 		case float64:
 			v := float64(lhsv)
-			if v > rhsv || nearlyEqual(v, rhsv) {
+			if v > rhsv || rdf.NearlyEqual(v, rhsv) {
 				return 1, nil
 			}
 			return 0, nil
@@ -842,7 +1029,7 @@ func (op opGE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 
 		case float64:
 			v := float64(lhsv)
-			if v > rhsv || nearlyEqual(v, rhsv) {
+			if v > rhsv || rdf.NearlyEqual(v, rhsv) {
 				return 1, nil
 			}
 			return 0, nil
@@ -857,25 +1044,25 @@ func (op opGE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 			if err != nil {
 				return nil, fmt.Errorf("opGE double and string, string not a double")
 			}
-			if lhsv > v || nearlyEqual(v, lhsv) {
+			if lhsv > v || rdf.NearlyEqual(v, lhsv) {
 				return 1, nil
 			}
 			return 0, nil
 		case int:
 			v := float64(rhsv)
-			if lhsv > v || nearlyEqual(lhsv, v) {
+			if lhsv > v || rdf.NearlyEqual(lhsv, v) {
 				return 1, nil
 			}
 			return 0, nil
 		case int64:
 			v := float64(rhsv)
-			if lhsv > v || nearlyEqual(lhsv, v) {
+			if lhsv > v || rdf.NearlyEqual(lhsv, v) {
 				return 1, nil
 			}
 			return 0, nil
 
 		case float64:
-			if lhsv > rhsv || nearlyEqual(lhsv, rhsv) {
+			if lhsv > rhsv || rdf.NearlyEqual(lhsv, rhsv) {
 				return 1, nil
 			}
 			return 0, nil
@@ -895,9 +1082,9 @@ func (op opGE) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	return nil, fmt.Errorf("opGE incompatible types, rejected")
 }
 
+type opDIV struct{}
 
-type opDIV struct {}
-func (op opDIV) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opDIV) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	if lhs == nil || rhs == nil {
 		return nil, nil
 	}
@@ -915,9 +1102,9 @@ func (op opDIV) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	return lhsv / rhsv, nil
 }
 
+type opADD struct{}
 
-type opADD struct {}
-func (op opADD) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opADD) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	if lhs == nil || rhs == nil {
 		return nil, nil
 	}
@@ -927,17 +1114,17 @@ func (op opADD) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 		case string:
 			return fmt.Sprintf("%s%s", lhsv, rhsv), nil
 		case int:
-			return fmt.Sprintf("%s%v",lhsv,rhsv), nil
+			return fmt.Sprintf("%s%v", lhsv, rhsv), nil
 		case int64:
-			return fmt.Sprintf("%s%v",lhsv,rhsv), nil
+			return fmt.Sprintf("%s%v", lhsv, rhsv), nil
 		case float64:
-			return fmt.Sprintf("%s%v",lhsv,rhsv), nil
+			return fmt.Sprintf("%s%v", lhsv, rhsv), nil
 		}
-	
+
 	case int:
 		switch rhsv := rhs.(type) {
 		case string:
-			return fmt.Sprintf("%v%v",lhsv,rhsv), nil
+			return fmt.Sprintf("%v%v", lhsv, rhsv), nil
 		case int:
 			return lhsv + rhsv, nil
 		case int64:
@@ -950,7 +1137,7 @@ func (op opADD) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	case int64:
 		switch rhsv := rhs.(type) {
 		case string:
-			return fmt.Sprintf("%v%v",lhsv,rhsv), nil
+			return fmt.Sprintf("%v%v", lhsv, rhsv), nil
 		case int:
 			return lhsv + int64(rhsv), nil
 		case int64:
@@ -963,7 +1150,7 @@ func (op opADD) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	case float64:
 		switch rhsv := rhs.(type) {
 		case string:
-			return fmt.Sprintf("%v%v",lhsv,rhsv), nil
+			return fmt.Sprintf("%v%v", lhsv, rhsv), nil
 		case int:
 			return lhsv + float64(rhsv), nil
 		case int64:
@@ -977,19 +1164,20 @@ func (op opADD) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 		switch rhsv := rhs.(type) {
 		case int:
 			// Assuming lhs is date and rhs is days
-			d, err := time.ParseDuration(fmt.Sprintf("%dh", rhsv * 24))
-			if err != nil {
-				log.Printf("opADD: while adding time with int (assuming adding days to a date): %v", err)
-			}
+			d := time.Duration(rhsv) * 24 * time.Hour
+			// d, err := time.ParseDuration(fmt.Sprintf("%dh", rhsv * 24))
+			// if err != nil {
+			// 	log.Printf("opADD: while adding time with int (assuming adding days to a date): %v", err)
+			// }
 			return lhsv.Add(d), nil
 		}
 	}
 	return nil, fmt.Errorf("opADD incompatible types: '%v' and '%v', rejected", lhs, rhs)
 }
 
+type opSUB struct{}
 
-type opSUB struct {}
-func (op opSUB) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opSUB) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	if lhs == nil || rhs == nil {
 		return nil, nil
 	}
@@ -1031,10 +1219,11 @@ func (op opSUB) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 		switch rhsv := rhs.(type) {
 		case int:
 			// Assuming lhs is date and rhs is days
-			d, err := time.ParseDuration(fmt.Sprintf("%dh", rhsv * 24))
-			if err != nil {
-				log.Printf("opSUB: while substracting time with int (assuming subtracting days to a date): %v", err)
-			}
+			d := time.Duration(rhsv) * 24 * time.Hour
+			// d, err := time.ParseDuration(fmt.Sprintf("%dh", rhsv * 24))
+			// if err != nil {
+			// 	log.Printf("opSUB: while substracting time with int (assuming subtracting days to a date): %v", err)
+			// }
 			return lhsv.Add(-d), nil
 
 		case time.Time:
@@ -1046,9 +1235,9 @@ func (op opSUB) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	return nil, fmt.Errorf("opSUB incompatible types, rejected")
 }
 
+type opMUL struct{}
 
-type opMUL struct {}
-func (op opMUL) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opMUL) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	if lhs == nil || rhs == nil {
 		return nil, nil
 	}
@@ -1086,10 +1275,10 @@ func (op opMUL) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
 	return nil, fmt.Errorf("opMUL incompatible types, rejected")
 }
 
-
 // Operator abs()
-type opABS struct {}
-func (op opABS) eval(lhs interface{}, _ interface{}) (interface{}, error) {
+type opABS struct{}
+
+func (op *opABS) eval(lhs interface{}, _ interface{}) (interface{}, error) {
 	if lhs == nil {
 		return 0, nil
 	}
@@ -1110,19 +1299,4 @@ func (op opABS) eval(lhs interface{}, _ interface{}) (interface{}, error) {
 		return math.Abs(lhsv), nil
 	}
 	return nil, fmt.Errorf("opABS incompatible types, rejected")
-}
-
-func nearlyEqual(a, b float64) bool {
-
-	// already equal?
-	if(a == b) {
-			return true
-	}
-
-	diff := math.Abs(a - b)
-	if a == 0.0 || b == 0.0 || diff < math.SmallestNonzeroFloat64 {
-			return diff < 1e-10 * math.SmallestNonzeroFloat64
-	}
-
-	return diff / (math.Abs(a) + math.Abs(b)) < 1e-10
 }

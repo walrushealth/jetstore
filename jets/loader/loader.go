@@ -14,6 +14,7 @@ import (
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
 	"github.com/artisoft-io/jetstore/jets/compute_pipes"
+	"github.com/artisoft-io/jetstore/jets/datatable"
 	"github.com/artisoft-io/jetstore/jets/schema"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
@@ -78,19 +79,17 @@ func InputEncodingFromString(ie string) InputEncoding {
 
 var inputFileEncoding InputEncoding
 
-type LoadFromS3FilesResult struct {
-	LoadRowCount int64
-	BadRowCount  int64
-	err          error
-}
-
 // processFile
 // --------------------------------------------------------------------------------------
 func processFile(dbpool *pgxpool.Pool, done chan struct{}, errCh chan error, headersFileCh, fileNamesCh <-chan string,
-	errFileHd *os.File) (headersDKInfo *schema.HeadersAndDomainKeysInfo, loadFromS3FilesResultCh chan LoadFromS3FilesResult,
-	copy2DbResultCh chan chan compute_pipes.ComputePipesResult) {
-	loadFromS3FilesResultCh = make(chan LoadFromS3FilesResult, 1)
-	copy2DbResultCh = make(chan chan compute_pipes.ComputePipesResult, 101)	// NOTE: 101 is the limit of nbr of output table
+	errFileHd *os.File) (headersDKInfo *schema.HeadersAndDomainKeysInfo, chResults *compute_pipes.ChannelResults) {
+	chResults = &compute_pipes.ChannelResults{
+		// NOTE: 101 is the limit of nbr of output table
+		// NOTE: 10 is the limit of nbr of splitter operators
+		LoadFromS3FilesResultCh: make(chan compute_pipes.LoadFromS3FilesResult, 1),
+		Copy2DbResultCh:         make(chan chan compute_pipes.ComputePipesResult, 101),
+		WritePartitionsResultCh: make(chan chan compute_pipes.ComputePipesResult, 10),
+	}
 	var rawHeaders *[]string
 	var headersFile string
 	var fixedWidthColumnPrefix string
@@ -103,8 +102,12 @@ func processFile(dbpool *pgxpool.Pool, done chan struct{}, errCh chan error, hea
 	// Get the file name to get the headers from
 	select {
 	case headersFile = <-headersFileCh:
+		if len(headersFile) == 0 {
+			// No header file, therefore no input file
+			goto doNothingExit
+		}
 		log.Printf("Reading headers from file %s", headersFile)
-	case <-time.After(5 * time.Minute):
+	case <-time.After(2 * time.Minute):
 		err = fmt.Errorf("unable to get the header file name")
 		goto gotError
 	}
@@ -144,7 +147,7 @@ func processFile(dbpool *pgxpool.Pool, done chan struct{}, errCh chan error, hea
 		if err != nil {
 			goto gotError
 		}
-		fmt.Println("Input columns (rawHeaders) for fixed-width schema:", rawHeaders)
+		log.Println("Input columns (rawHeaders) for fixed-width schema:", rawHeaders)
 
 	case Parquet:
 		// Get the file headers from the parquet schema
@@ -164,8 +167,7 @@ func processFile(dbpool *pgxpool.Pool, done chan struct{}, errCh chan error, hea
 		}
 		// Make sure we don't have empty names in rawHeaders
 		adjustFillers(rawHeaders)
-		fmt.Println("Got input columns (rawHeaders) from json:", rawHeaders)
-
+		log.Println("Got input columns (rawHeaders) from json:", rawHeaders)
 
 	case Xlsx, HeaderlessXlsx:
 		// Parse the file type specific options
@@ -207,15 +209,24 @@ func processFile(dbpool *pgxpool.Pool, done chan struct{}, errCh chan error, hea
 
 	// read the rest of the file(s)
 	// ---------------------------------------
-	loadFiles(dbpool, headersDKInfo, done, errCh, fileNamesCh, loadFromS3FilesResultCh, copy2DbResultCh, badRowsWriter)
-
+	loadFiles(dbpool, headersDKInfo, done, errCh, fileNamesCh, chResults, badRowsWriter)
 	// All good!
 	return
 
+doNothingExit:
+	log.Println("processFile: no files to load, exiting ***", err)
+	chResults.LoadFromS3FilesResultCh <- compute_pipes.LoadFromS3FilesResult{}
+	close(chResults.Copy2DbResultCh)
+	close(chResults.WritePartitionsResultCh)
+	close(done)
+	return
+
 gotError:
-	fmt.Println("processFile gotError, writing to loadFromS3FilesResultCh AND copy2DbResultCh (ComputePipesResult)  ***", err)
-	loadFromS3FilesResultCh <- LoadFromS3FilesResult{err: err}
-	close(copy2DbResultCh)
+	log.Println("processFile: gotError prior to loadFiles***", err)
+	chResults.LoadFromS3FilesResultCh <- compute_pipes.LoadFromS3FilesResult{Err: err}
+	close(chResults.Copy2DbResultCh)
+	close(chResults.WritePartitionsResultCh)
+	errCh <- err
 	close(done)
 	return
 
@@ -226,7 +237,8 @@ func processFileAndReportStatus(dbpool *pgxpool.Pool,
 	done chan struct{}, errCh chan error, headersFileCh, fileNamesCh <-chan string,
 	downloadS3ResultCh <-chan DownloadS3Result, inFolderPath string, errFileHd *os.File) (bool, error) {
 
-	headersDKInfo, loadFromS3FilesResultCh, copy2DbResultCh := processFile(dbpool, done, errCh, headersFileCh, fileNamesCh, errFileHd)
+	headersDKInfo, chResults := processFile(dbpool, done, errCh, headersFileCh, fileNamesCh, errFileHd)
+
 	downloadResult := <-downloadS3ResultCh
 	err := downloadResult.err
 	log.Println("Downloaded", downloadResult.InputFilesCount, "files from s3", downloadResult.err)
@@ -234,39 +246,32 @@ func processFileAndReportStatus(dbpool *pgxpool.Pool,
 		processingErrors = append(processingErrors, downloadResult.err.Error())
 	}
 
-	loadFromS3FilesResult := <-loadFromS3FilesResultCh
-	log.Println("Loaded", loadFromS3FilesResult.LoadRowCount, "rows from s3 files with", loadFromS3FilesResult.BadRowCount, "bad rows", loadFromS3FilesResult.err)
-	if loadFromS3FilesResult.err != nil {
-		processingErrors = append(processingErrors, loadFromS3FilesResult.err.Error())
+	log.Println("**!@@ CP RESULT = Loaded from s3:")
+	loadFromS3FilesResult := <-chResults.LoadFromS3FilesResultCh
+	log.Println("Loaded", loadFromS3FilesResult.LoadRowCount, "rows from s3 files with", loadFromS3FilesResult.BadRowCount, "bad rows", loadFromS3FilesResult.Err)
+	if loadFromS3FilesResult.Err != nil {
+		processingErrors = append(processingErrors, loadFromS3FilesResult.Err.Error())
 		if err == nil {
-			err = loadFromS3FilesResult.err
-		}	
-	}
-
-	for table := range copy2DbResultCh {
-		copy2DbResult := <-table
-		log.Println("Inserted", copy2DbResult.CopyRowCount, "rows in table",copy2DbResult.TableName,"::", copy2DbResult.Err)	
-		if copy2DbResult.Err != nil {
-			processingErrors = append(processingErrors, copy2DbResult.Err.Error())
-			if err == nil {
-				err = copy2DbResult.Err
-			}
-		}	
-	}
-
-	// Check for error from compute pipes
-	var cpErr error
-	select {
-	case cpErr = <-errCh:
-		// got an error during compute pipes processing
-		log.Printf("got error from Compute Pipes processing: %v", cpErr)
-		if err == nil {
-			err= cpErr
+			err = loadFromS3FilesResult.Err
 		}
-		processingErrors = append(processingErrors, fmt.Sprintf("got error from Compute Pipes processing: %v", cpErr))
-	default:
-		log.Println("No errors from Compute Pipes processing!")
 	}
+	// log.Println("**!@@ CP RESULT = Loaded from s3: DONE")
+	log.Println("**!@@ CP RESULT = Copy2DbResultCh:")
+	var outputRowCount int64
+	for table := range chResults.Copy2DbResultCh {
+		// log.Println("**!@@ Read table results:")
+		for copy2DbResult := range table {
+			outputRowCount += copy2DbResult.CopyRowCount
+			log.Println("**!@@ Inserted", copy2DbResult.CopyRowCount, "rows in table", copy2DbResult.TableName, "::", copy2DbResult.Err)
+			if copy2DbResult.Err != nil {
+				processingErrors = append(processingErrors, copy2DbResult.Err.Error())
+				if err == nil {
+					err = copy2DbResult.Err
+				}
+			}
+		}
+	}
+	log.Println("**!@@ CP RESULT = Copy2DbResultCh: DONE")
 
 	// registering the load
 	// ---------------------------------------
@@ -276,16 +281,7 @@ func processFileAndReportStatus(dbpool *pgxpool.Pool,
 		processingErrors = append(processingErrors, fmt.Sprintf("File contains %d bad rows", loadFromS3FilesResult.BadRowCount))
 		if err != nil {
 			status = "failed"
-			err = nil
-		}
-	}
-	// register the session if status is not failed
-	if status != "failed" {
-
-		err = schema.RegisterSession(dbpool, "file", *client, *sessionId, *sourcePeriodKey)
-		if err != nil {
-			status = "errors"
-			processingErrors = append(processingErrors, fmt.Sprintf("error while registering the session id: %v", err))
+			// loader in classic mode, we don't want to fail (panic) the task
 			err = nil
 		}
 	}
@@ -304,10 +300,26 @@ func processFileAndReportStatus(dbpool *pgxpool.Pool,
 	} else {
 		awsi.LogMetric(*completedMetric, dimentions, 1)
 	}
-
-	err = registerCurrentLoad(loadFromS3FilesResult.LoadRowCount, loadFromS3FilesResult.BadRowCount, dbpool, headersDKInfo, status, errMessage)
-	if err != nil {
-		return false, fmt.Errorf("error while registering the load: %v", err)
+	objectTypes := make([]string, 0)
+	if headersDKInfo != nil {
+		for objType := range headersDKInfo.DomainKeysInfoMap {
+			objectTypes = append(objectTypes, objType)
+		}
+	}
+	if *pipelineExecKey == -1 {
+		// Loader mode (loaderSM), register with loader_execution_status table
+		log.Println("Loader mode (loaderSM), register with loader_execution_status table")
+		err2 := registerCurrentLoad(loadFromS3FilesResult.LoadRowCount, loadFromS3FilesResult.BadRowCount,
+			dbpool, objectTypes, tableName, status, errMessage)
+		if err2 != nil {
+			return false, fmt.Errorf("error while registering the load (loaderSM): %v", err2)
+		}
+	} else {
+		// CPIPES mode (cpipesSM), register the result of this shard with pipeline_execution_details
+		err2 := updatePipelineExecutionStatus(dbpool, int(loadFromS3FilesResult.LoadRowCount), int(outputRowCount), status, errMessage)
+		if err2 != nil {
+			return false, fmt.Errorf("error while registering the load (cpipesSM): %v", err2)
+		}
 	}
 
 	return loadFromS3FilesResult.BadRowCount > 0, err
@@ -339,6 +351,45 @@ func coordinateWork() error {
 	if !tblExists {
 		return fmt.Errorf("error: JetStore schema does not exst in database, please run 'update_db -migrateDb'")
 	}
+
+	// Get pipeline exec info when peKey is provided
+	// ---------------------------------------
+	if *pipelineExecKey > -1 {
+		log.Println("CPIPES, loading pipeline configuration")
+		var fkey sql.NullString
+		stmt := `
+		SELECT	ir.client, ir.org, ir.object_type, ir.file_key, ir.source_period_key, 
+			pe.pipeline_config_key, pe.process_name, pe.input_session_id, pe.session_id, pe.user_email
+		FROM 
+			jetsapi.pipeline_execution_status pe,
+			jetsapi.input_registry ir
+		WHERE pe.main_input_registry_key = ir.key
+			AND pe.key = $1`
+		err = dbpool.QueryRow(context.Background(), stmt, *pipelineExecKey).Scan(client, clientOrg, objectType, &fkey, sourcePeriodKey,
+			&pipelineConfigKey, &processName, &inputSessionId, sessionId, userEmail)
+		if err != nil {
+			return fmt.Errorf("query table_name, domain_keys_json, input_columns_json, input_columns_positions_csv, input_format_data_json from jetsapi.source_config failed: %v", err)
+		}
+		if !fkey.Valid {
+			return fmt.Errorf("error, file_key is NULL in input_registry table")
+		}
+		*inFile = fkey.String
+		log.Println("Updated argument: client", *client)
+		log.Println("Updated argument: org", *clientOrg)
+		log.Println("Updated argument: objectType", *objectType)
+		log.Println("Updated argument: sourcePeriodKey", *sourcePeriodKey)
+		log.Println("Updated argument: inputSessionId", inputSessionId)
+		log.Println("Updated argument: sessionId", *sessionId)
+		log.Println("Updated argument: inFile", *inFile)
+	}
+	// Extract processing date from file key inFile
+	fileKeyComponents = make(map[string]interface{})
+	fileKeyComponents = datatable.SplitFileKeyIntoComponents(fileKeyComponents, inFile)
+	year := fileKeyComponents["year"].(int)
+	month := fileKeyComponents["month"].(int)
+	day := fileKeyComponents["day"].(int)
+	fileKeyDate = time.Date(year, time.Month(month), day, 14, 0, 0, 0, time.UTC)
+	log.Println("fileKeyDate:", fileKeyDate)
 
 	// check the session is not already used
 	// ---------------------------------------
@@ -386,12 +437,14 @@ func coordinateWork() error {
 		// For backward compatibility
 		inputFileEncoding = Csv
 	}
-	if cpJson.Valid {
-		computePipesJson = cpJson.String
-		log.Println("This loader contains Compute Pipes configuration")
-	}
 
 	log.Printf("Input file encoding (format) is: %s", inputFileEncoding.String())
+
+	return processComputeGraph(dbpool)
+}
+
+func processComputeGraph(dbpool *pgxpool.Pool) (err error) {
+
 	// Start the download of file(s) from s3 and upload to db, coordinated using channel
 	done := make(chan struct{})
 	errCh := make(chan error, 1)

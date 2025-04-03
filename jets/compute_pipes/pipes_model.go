@@ -41,8 +41,7 @@ func (cp *ComputePipesConfig) NbrComputePipes() int {
 
 // This function is called once per compute pipes step (sharding or redicung)
 // so we construct the ExprNodeEvaluator as needed.
-func (cp *ComputePipesConfig) GetComputePipes(stepId int,
-	clusterShardingInfo *ClusterShardingInfo, env map[string]any) ([]PipeSpec, int, error) {
+func (cp *ComputePipesConfig) GetComputePipes(stepId int, env map[string]any) ([]PipeSpec, int, error) {
 	switch {
 	case len(cp.ReducingPipesConfig) > stepId:
 		return cp.ReducingPipesConfig[stepId], stepId, nil
@@ -52,10 +51,8 @@ func (cp *ComputePipesConfig) GetComputePipes(stepId int,
 			// Available expr variables:
 			// multi_step_sharding as int, when > 0, nbr of shards is nbr_partition**2
 			// total_file_size in bytes
+			// total_file_size_gb in GiB
 			// nbr_partitions as int (assuming each sharding step has the same nbr of partitions?)
-			env["multi_step_sharding"] = clusterShardingInfo.MultiStepSharding
-			env["total_file_size"] = clusterShardingInfo.TotalFileSize
-			env["nbr_partitions"] = clusterShardingInfo.NbrPartitions
 			builderContext := ExprBuilderContext(env)
 			for {
 				if cp.ConditionalPipesConfig[stepId].When != nil {
@@ -141,8 +138,7 @@ func (cs *ClusterSpec) NbrPartitions(mode string) int {
 
 // Cluster sizing configuration
 // Allows to dynamically determine the NbrNodes based on total size of input files.
-// UseEcsTasks is used for step id 'reducing0'
-// When UseEcsTasks == true, MaxConcurrency applies to ECS cluster (reducing0 step id).
+// When using ecs tasks, MaxConcurrency applies to ECS cluster,
 // otherwise MaxConcurrency is the number of concurrent lambda functions executing.
 // Note that S3WorkerPoolSize is used for reducing01, all other reducing steps use the
 // S3WorkerPoolSize set at the ClusterSpec level.
@@ -150,16 +146,15 @@ func (cs *ClusterSpec) NbrPartitions(mode string) int {
 // to shards.
 // When [MaxNbrPartitions] is not specified, the value at the ClusterSpec level is taken.
 type ClusterShardingSpec struct {
-	WhenTotalSizeGe             int  `json:"when_total_size_ge_mb"`
-	MaxNbrPartitions            int  `json:"max_nbr_partitions"`
-	MultiStepShardingThresholds int  `json:"multi_step_sharding_thresholds"`
-	ShardSizeMb                 int  `json:"shard_size_mb"`
-	ShardMaxSizeMb              int  `json:"shard_max_size_mb"`
-	ShardSizeBy                 int  `json:"shard_size_by"`     // for testing only
-	ShardMaxSizeBy              int  `json:"shard_max_size_by"` // for testing only
-	S3WorkerPoolSize            int  `json:"s3_worker_pool_size"`
-	UseEcsTasks                 bool `json:"use_ecs_tasks"`
-	MaxConcurrency              int  `json:"max_concurrency"`
+	WhenTotalSizeGe             int `json:"when_total_size_ge_mb"`
+	MaxNbrPartitions            int `json:"max_nbr_partitions"`
+	MultiStepShardingThresholds int `json:"multi_step_sharding_thresholds"`
+	ShardSizeMb                 int `json:"shard_size_mb"`
+	ShardMaxSizeMb              int `json:"shard_max_size_mb"`
+	ShardSizeBy                 int `json:"shard_size_by"`     // for testing only
+	ShardMaxSizeBy              int `json:"shard_max_size_by"` // for testing only
+	S3WorkerPoolSize            int `json:"s3_worker_pool_size"`
+	MaxConcurrency              int `json:"max_concurrency"`
 }
 
 type MetricsSpec struct {
@@ -345,11 +340,14 @@ type PipeSpec struct {
 // multi_step_sharding as int, when > 0, nbr of shards is nbr_partition**2
 // total_file_size in bytes
 // nbr_partitions as int (used for hashing purpose)
+// use_ecs_tasks is true to use ecs fargate task
+// use_ecs_tasks_when is an expression as the when property.
 type ConditionalPipeSpec struct {
-	StepName    string          `json:"step_name,omitempty"`
-	UseEcsTasks bool            `json:"use_ecs_tasks,omitzero"`
-	PipesConfig []PipeSpec      `json:"pipes_config"`
-	When        *ExpressionNode `json:"when"`
+	StepName        string          `json:"step_name,omitempty"`
+	UseEcsTasks     bool            `json:"use_ecs_tasks,omitzero"`
+	UseEcsTasksWhen *ExpressionNode `json:"use_ecs_tasks_when,omitzero"`
+	PipesConfig     []PipeSpec      `json:"pipes_config"`
+	When            *ExpressionNode `json:"when"`
 }
 
 type SplitterSpec struct {
@@ -701,13 +699,14 @@ type LookupColumnSpec struct {
 }
 
 // Hash using values from columns.
-// Case single column, use Expr
-// Case multi column, use CompositeExpr
+// Case single column, use Expr.
+// Case multi column, use CompositeExpr.
 // Expr takes precedence if both are populated.
 // DomainKey is specified as an object_type. DomainKeysJson provides the
 // mapping between domain keys and columns.
 // AlternateCompositeExpr is used when Expr or CompositeExpr returns nil or empty.
-// MultiStepShardingMode values: 'limited_range', 'full_range' or empty
+// MultiStepShardingMode values: 'limited_range', 'full_range' or empty.
+// NoPartitions indicated not to assign the hash to a partition (no modulo operation).
 type HashExpression struct {
 	Expr                   string   `json:"expr,omitempty"`
 	CompositeExpr          []string `json:"composite_expr,omitempty"`
@@ -715,6 +714,7 @@ type HashExpression struct {
 	NbrJetsPartitions      *uint64  `json:"nbr_jets_partitions,omitzero"`
 	MultiStepShardingMode  string   `json:"multi_step_sharding_mode,omitempty"`
 	AlternateCompositeExpr []string `json:"alternate_composite_expr"`
+	NoPartitions           bool     `json:"no_partitions,omitzero"`
 }
 
 type MapExpression struct {

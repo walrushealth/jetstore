@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsecs"
 	awselb "github.com/aws/aws-cdk-go/awscdk/v2/awselasticloadbalancingv2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsiam"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsrds"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awss3"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
@@ -149,7 +150,7 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *jetstores
 		Username: username,
 	})
 
-	// Need to accomodate for different version in different env, 
+	// Need to accomodate for different version in different env,
 	// default is the latest used by jetstore
 	dbVersion := awsrds.AuroraPostgresEngineVersion_VER_15_10()
 	switch os.Getenv("JETS_DB_VERSION") {
@@ -163,10 +164,15 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *jetstores
 		Engine: awsrds.DatabaseClusterEngine_AuroraPostgres(&awsrds.AuroraPostgresClusterEngineProps{
 			Version: dbVersion,
 		}),
-		Credentials:             awsrds.Credentials_FromSecret(jsComp.RdsSecret, username),
-		ClusterIdentifier:       props.MkId("jetstoreDb"),
-		DefaultDatabaseName:     jsii.String("postgres"),
-		Writer:                  awsrds.ClusterInstance_ServerlessV2(jsii.String("ClusterInstance"), &awsrds.ServerlessV2ClusterInstanceProps{}),
+		Credentials:         awsrds.Credentials_FromSecret(jsComp.RdsSecret, username),
+		ClusterIdentifier:   props.MkId("jetstoreDb"),
+		DefaultDatabaseName: jsii.String("postgres"),
+		DeletionProtection:  jsii.Bool(true),
+		Writer: awsrds.ClusterInstance_ServerlessV2(jsii.String("ClusterInstance"), &awsrds.ServerlessV2ClusterInstanceProps{
+			AllowMajorVersionUpgrade: jsii.Bool(true),
+			AutoMinorVersionUpgrade:  jsii.Bool(true),
+			PubliclyAccessible:       jsii.Bool(false),
+		}),
 		ServerlessV2MinCapacity: props.DbMinCapacity,
 		ServerlessV2MaxCapacity: props.DbMaxCapacity,
 		Vpc:                     jsComp.Vpc,
@@ -177,7 +183,8 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *jetstores
 		S3ImportBuckets: &[]awss3.IBucket{
 			jsComp.SourceBucket,
 		},
-		StorageEncrypted: jsii.Bool(true),
+		StorageEncrypted:        jsii.Bool(true),
+		CloudwatchLogsRetention: awslogs.RetentionDays_THREE_MONTHS,
 	})
 	if phiTagName != nil {
 		awscdk.Tags_Of(jsComp.RdsCluster).Add(phiTagName, jsii.String("true"), nil)
@@ -340,7 +347,7 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *jetstores
 	}))
 
 	// ---------------------------------------
-	// Add Scret Rotation Schedules
+	// Add Secret Rotation Schedules
 	// ---------------------------------------
 	jsComp.AddSecretRotationSchedules(scope, stack, props)
 
@@ -367,11 +374,12 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *jetstores
 			})
 		}
 		jsComp.UiLoadBalancer = awselb.NewApplicationLoadBalancer(stack, jsii.String("UIELB"), &awselb.ApplicationLoadBalancerProps{
-			Vpc:            jsComp.Vpc,
-			InternetFacing: jsii.Bool(internetFacing),
-			VpcSubnets:     elbSubnetSelection,
-			SecurityGroup:  elbSecurityGroup,
-			IdleTimeout:    awscdk.Duration_Minutes(jsii.Number(20)),
+			Vpc:                                  jsComp.Vpc,
+			InternetFacing:                       jsii.Bool(internetFacing),
+			VpcSubnets:                           elbSubnetSelection,
+			SecurityGroup:                        elbSecurityGroup,
+			XAmznTlsVersionAndCipherSuiteHeaders: jsii.Bool(true),
+			IdleTimeout:                          awscdk.Duration_Minutes(jsii.Number(20)),
 		})
 		if phiTagName != nil {
 			awscdk.Tags_Of(jsComp.UiLoadBalancer).Add(phiTagName, jsii.String("true"), nil)
@@ -384,10 +392,11 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *jetstores
 		}
 	} else {
 		jsComp.UiLoadBalancer = awselb.NewApplicationLoadBalancer(stack, jsii.String("UIELB"), &awselb.ApplicationLoadBalancerProps{
-			Vpc:            jsComp.Vpc,
-			InternetFacing: jsii.Bool(false),
-			VpcSubnets:     jsComp.IsolatedSubnetSelection,
-			IdleTimeout:    awscdk.Duration_Minutes(jsii.Number(20)),
+			Vpc:                                  jsComp.Vpc,
+			InternetFacing:                       jsii.Bool(false),
+			VpcSubnets:                           jsComp.IsolatedSubnetSelection,
+			XAmznTlsVersionAndCipherSuiteHeaders: jsii.Bool(true),
+			IdleTimeout:                          awscdk.Duration_Minutes(jsii.Number(20)),
 		})
 		if phiTagName != nil {
 			awscdk.Tags_Of(jsComp.UiLoadBalancer).Add(phiTagName, jsii.String("true"), nil)
@@ -410,9 +419,10 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *jetstores
 	var listener awselb.ApplicationListener
 	if os.Getenv("JETS_ELB_MODE") == "public" {
 		listener = jsComp.UiLoadBalancer.AddListener(jsii.String("Listener"), &awselb.BaseApplicationListenerProps{
-			Port:     jsii.Number(uiPort),
-			Open:     jsii.Bool(true),
-			Protocol: awselb.ApplicationProtocol_HTTPS,
+			Port:      jsii.Number(uiPort),
+			Open:      jsii.Bool(true),
+			Protocol:  awselb.ApplicationProtocol_HTTPS,
+			SslPolicy: awselb.SslPolicy_TLS13_EXT1,
 			Certificates: &[]awselb.IListenerCertificate{
 				awselb.NewListenerCertificate(jsii.String(os.Getenv("JETS_CERT_ARN"))),
 			},
@@ -427,11 +437,14 @@ func NewJetstoreOneStack(scope constructs.Construct, id string, props *jetstores
 	// Register the UI service to the ELB
 	jsComp.EcsUiService.RegisterLoadBalancerTargets(&awsecs.EcsTarget{
 		ContainerName:    jsComp.UiTaskContainer.ContainerName(),
-		ContainerPort:    jsii.Number(8080),
+		ContainerPort:    jsii.Number(8443),
 		Protocol:         awsecs.Protocol_TCP,
 		NewTargetGroupId: jsii.String("UI"),
 		Listener: awsecs.ListenerConfig_ApplicationListener(listener, &awselb.AddApplicationTargetsProps{
-			Protocol: awselb.ApplicationProtocol_HTTP,
+			Protocol: awselb.ApplicationProtocol_HTTPS,
+			HealthCheck: &awselb.HealthCheck{
+				Path: jsii.String("/healthcheck/status"),
+			},
 		}),
 	})
 
@@ -755,8 +768,9 @@ func main() {
 	}
 	NewJetstoreOneStack(app, stackId, &jetstorestack.JetstoreOneStackProps{
 		StackProps: awscdk.StackProps{
-			Env:         env(),
-			Description: stackDescription,
+			Env:                   env(),
+			Description:           stackDescription,
+			TerminationProtection: jsii.Bool(true),
 		},
 		StackId:                      stackId,
 		StackSuffix:                  os.Getenv("JETS_STACK_SUFFIX"),

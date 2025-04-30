@@ -37,6 +37,7 @@ type CpipesStartup struct {
 	MainInputSchemaProviderConfig *SchemaProviderSpec
 	MainInputDomainKeysSpec       *DomainKeysSpec
 	MainInputDomainClass          string
+	DomainKeysSpecByClass         map[string]*DomainKeysSpec
 	EnvSettings                   map[string]any
 	PipelineConfigKey             int
 	InputSessionId                string
@@ -102,6 +103,7 @@ func (args *StartComputePipesArgs) initializeCpipes(ctx context.Context, dbpool 
 	if err != nil {
 		return cpipesStartup, fmt.Errorf("while unmarshaling compute pipes json (StartShardingComputePipes): %s", err)
 	}
+
 	// Adjust ChannelSpec having columns specified by a jetrules class
 	classNames := make(map[string]bool)
 	if sourceType == "domain_table" {
@@ -129,14 +131,15 @@ func (args *StartComputePipesArgs) initializeCpipes(ctx context.Context, dbpool 
 		}
 	}
 
-	dkMap := make(map[string]*DomainKeysSpec)
+	cpipesStartup.DomainKeysSpecByClass = make(map[string]*DomainKeysSpec, len(classNames))
+	// log.Printf("***@@@ initialize CPIPES Class Names are %v\n", classNames)
 	if len(classNames) > 0 {
 		// Get the domain_key_json from domain_keys_registry table
 		// Example of how this table is populated from base__workspace_init_db.sql:
 		// INSERT INTO jetsapi.domain_keys_registry (entity_rdf_type, object_types, domain_keys_json) VALUES
 		// ('wrs:Eligibility', '{"Eligibility"}', '{"Eligibility":"wrs:Generated_ID","jets:hashing_override":"none"}'),
 		var buf strings.Builder
-		buf.WriteString("SELECT entity_rdf_type, domain_keys_json FROM jetsapi.domain_keys_registry WHERE entity_rdf_type IN (")
+		buf.WriteString("SELECT entity_rdf_type, object_types, domain_keys_json FROM jetsapi.domain_keys_registry WHERE entity_rdf_type IN (")
 		first := true
 		for c, _ := range classNames {
 			if !first {
@@ -148,30 +151,39 @@ func (args *StartComputePipesArgs) initializeCpipes(ctx context.Context, dbpool 
 			buf.WriteString("'")
 		}
 		buf.WriteString(")")
-		rows, err := dbpool.Query(ctx, buf.String())
+		bufStr := buf.String()
+		// log.Printf("*** Getting domain_key_json from domain_keys_registry table: %s\n", bufStr)
+		rows, err := dbpool.Query(ctx, bufStr)
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
 				// scan the row
-				var className, domainKeysJson string
-				if err = rows.Scan(&className, &domainKeysJson); err != nil {
+				var className string
+				var domainKeysJson sql.NullString
+				var objTypes []string
+				if err = rows.Scan(&className, &objTypes, &domainKeysJson); err != nil {
 					return cpipesStartup, fmt.Errorf("while querying domain_keys_json from domain_keys_registry: %s", err)
 				}
-				if len(domainKeysJson) > 0 {
-					var v any
-					err = json.Unmarshal([]byte(domainKeysJson), &v)
-					if err != nil {
-						return cpipesStartup, fmt.Errorf(
-							"while unmarshaling domain_keys_json from domain_keys_registry for class %s: %v", className, err)
-					}
-					if v != nil {
-						dkSpec, err := ParseDomainKeyInfo("", v)
-						if err != nil {
-							return cpipesStartup, fmt.Errorf("while parsing domain_keys_info2: %s", err)
-						}
-						dkMap[className] = dkSpec
-					}
+				if len(domainKeysJson.String) == 0 {
+					domainKeysJson.String = "\"jets:key\""
 				}
+				var v any
+				err = json.Unmarshal([]byte(domainKeysJson.String), &v)
+				if err != nil {
+					return cpipesStartup, fmt.Errorf(
+						"while unmarshaling domain_keys_json from domain_keys_registry for class %s: %v", className, err)
+				}
+				// mainObjectType here is the default object_type for the domain key json, it is needed when the
+				// json contains only a string/array (column names) and not a struct with {object_type: column_names}
+				mainObjectType := ""
+				if len(objTypes) == 1 {
+					mainObjectType = objTypes[0]
+				}
+				dkSpec, err := ParseDomainKeyInfo(mainObjectType, v)
+				if err != nil {
+					return cpipesStartup, fmt.Errorf("while parsing domain_keys_info2: %s", err)
+				}
+				cpipesStartup.DomainKeysSpecByClass[className] = dkSpec
 			}
 		} else {
 			log.Printf("WARNING: Error while querying table domain_keys_registry: %v\n", err)
@@ -181,14 +193,16 @@ func (args *StartComputePipesArgs) initializeCpipes(ctx context.Context, dbpool 
 	for i := range cpipesStartup.CpConfig.Channels {
 		chSpec := &cpipesStartup.CpConfig.Channels[i]
 		if len(chSpec.DomainKeys) > 0 {
+			// chSpec.DomainKeys must use a struct with {object_type: column_names}
 			dkSpec, err := ParseDomainKeyInfo("", chSpec.DomainKeys)
 			if err != nil {
 				return cpipesStartup, fmt.Errorf("while parsing domain_keys_info2: %s", err)
 			}
-			chSpec.DomainKeysSpec = dkSpec
+			chSpec.DomainKeysInfo = dkSpec
 		} else {
 			if len(chSpec.ClassName) > 0 {
-				chSpec.DomainKeysSpec = dkMap[chSpec.ClassName]
+				// log.Printf("*** Channel %s chSpec.ClassName %s\n", chSpec.Name, chSpec.ClassName)
+				chSpec.DomainKeysInfo = cpipesStartup.DomainKeysSpecByClass[chSpec.ClassName]
 			}
 		}
 	}
@@ -257,32 +271,33 @@ func (args *StartComputePipesArgs) initializeCpipes(ctx context.Context, dbpool 
 	cpipesStartup.EnvSettings = PrepareCpipesEnv(&cpipesStartup.CpConfig, mainInputSchemaProvider)
 
 	// Parse the Domain Key Info from source_config and main input schema provider
-	var dkInfo any
 	switch sourceType {
 	case "file":
 		// Main input file is an external file
+		// log.Printf("*** sourceType is 'file', icDomainKeys: %s\n", icDomainKeys.String)
+		var dkInfo any
 		switch {
 		case len(mainInputSchemaProvider.DomainKeys) > 0:
 			dkInfo = mainInputSchemaProvider.DomainKeys
-
-		case icDomainKeys.Valid && len(icDomainKeys.String) > 0:
+		default:
+			if len(icDomainKeys.String) == 0 {
+				icDomainKeys.String = "\"jets:key\""
+			}
 			err = json.Unmarshal([]byte(icDomainKeys.String), &dkInfo)
 			if err != nil {
 				return cpipesStartup,
 					fmt.Errorf("while unmarshaling domain_keys_json for the main input source (case source_type is file): %s", err)
 			}
-			if dkInfo != nil {
-				dkSpec, err := ParseDomainKeyInfo(objectType, dkInfo)
-				if err != nil {
-					return cpipesStartup, fmt.Errorf("while parsing domain_keys_info for the main input source (case source_type is file): %s", err)
-				}
-				cpipesStartup.MainInputDomainKeysSpec = dkSpec
-			}
 		}
+		dkSpec, err := ParseDomainKeyInfo(objectType, dkInfo)
+		if err != nil {
+			return cpipesStartup, fmt.Errorf("while parsing domain_keys_info for the main input source (case source_type is file): %s", err)
+		}
+		cpipesStartup.MainInputDomainKeysSpec = dkSpec
 	case "domain_table":
 		// Main input file is a domain entity, ie, an entity mapped into a jetstore data model
 		cpipesStartup.MainInputDomainClass = tableName
-		cpipesStartup.MainInputDomainKeysSpec = dkMap[tableName]
+		cpipesStartup.MainInputDomainKeysSpec = cpipesStartup.DomainKeysSpecByClass[tableName]
 	}
 
 	// The main_input schema provider should always have the key _main_input_.
@@ -728,14 +743,6 @@ func validateOutputChConfig(outputChConfig *OutputChannelConfig, sp *SchemaProvi
 			}
 			if len(outputChConfig.OutputLocation) == 0 {
 				outputChConfig.OutputLocation = "jetstore_s3_output"
-			}
-			switch outputChConfig.OutputLocation {
-			case "jetstore_s3_input", "jetstore_s3_output":
-			default:
-				return fmt.Errorf(
-					"configuration error: invalid output_location '%s' in output_channel '%s' of type"+
-						" 'output', expecting jetstore_s3_input or jetstore_s3_output",
-					outputChConfig.OutputLocation, outputChConfig.Name)
 			}
 
 		case "memory":

@@ -1,6 +1,7 @@
 package compute_pipes
 
 import (
+	"context"
 	"encoding/gob"
 	"encoding/json"
 	"errors"
@@ -20,7 +21,8 @@ func init() {
 }
 
 // Function to write transformed row to database
-func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool, inputSchemaCh <-chan any, computePipesInputCh <-chan []any) {
+func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
+	inputSchemaCh <-chan ParquetSchemaInfo, computePipesInputCh <-chan []any) {
 
 	// log.Println("Entering StartComputePipes")
 
@@ -76,20 +78,37 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool, inputS
 	if inputSchemaCh != nil {
 		// Get the parquet schema from the channel as it is being extracted from the
 		// first input file
-		for is := range inputSchemaCh {
-			v, ok := is.(ParquetSchemaInfo)
-			if ok {
-				inputParquetSchema = &v
-			} else {
-				log.Panicln("error: bug - invalid type for input parquet schema")
-			}
-		}
+		is := <-inputSchemaCh
+		inputParquetSchema = &is
 	}
 	inputChannelName = cpCtx.CpConfig.PipesConfig[0].InputChannel.Name
 	if inputChannelName == "input_row" {
 		// case sharding or reducing
 		// Setup the input channel for input_row
 		headersPosMap := make(map[string]int)
+		if len(mainInput.InputColumns) == 0 && inputParquetSchema != nil {
+			// Get the columns from the schema
+			mainInput.InputColumns = inputParquetSchema.Columns()
+			mainInput.InputColumns = append(mainInput.InputColumns, cpCtx.AddionalInputHeaders...)
+			// Add the headers from the partfile_key_component
+			for i := range cpCtx.CpConfig.Context {
+				if cpCtx.CpConfig.Context[i].Type == "partfile_key_component" {
+					mainInput.InputColumns = append(mainInput.InputColumns, cpCtx.CpConfig.Context[i].Key)
+				}
+			}
+			// Save the columns to db!
+			inputRowColumnsJson, _ := json.Marshal(InputRowColumns{
+				MainInput: mainInput.InputColumns,
+			})
+			// Update in cpipes_execution_status
+			stmt := `UPDATE jetsapi.cpipes_execution_status SET input_row_columns_json = $1 WHERE session_id = $2`
+			_, err2 := dbpool.Exec(context.TODO(), stmt, string(inputRowColumnsJson), cpCtx.ComputePipesCommonArgs.SessionId)
+			if err2 != nil {
+				cpErr = fmt.Errorf("error inserting in jetsapi.cpipes_execution_status table: %v", err2)
+				goto gotError
+			}
+			log.Println("GETTING COLUMNS FROM SCHEMA:", mainInput.InputColumns)
+		}
 		for i, c := range mainInput.InputColumns {
 			headersPosMap[c] = i
 		}
@@ -272,6 +291,7 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool, inputS
 		processName:        cpCtx.ProcessName,
 		channelRegistry:    channelRegistry,
 		lookupTableManager: lookupManager,
+		s3DeviceManager:    cpCtx.S3DeviceMgr,
 		schemaManager:      cpCtx.SchemaManager,
 		inputParquetSchema: inputParquetSchema,
 		done:               cpCtx.Done,
@@ -280,13 +300,6 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool, inputS
 		env:                cpCtx.EnvSettings,
 		nodeId:             cpCtx.NodeId,
 	}
-	err = ctx.NewS3DeviceManager()
-	if err != nil {
-		cpErr = err
-		goto gotError
-	}
-	// Set the S3DeviceManager to ComputePipesContext so it's avail when cpipes wind down
-	cpCtx.S3DeviceMgr = ctx.s3DeviceManager
 
 	// Start the metric reporting goroutine
 	if cpCtx.CpConfig.MetricsConfig != nil && ctx.cpConfig.MetricsConfig.ReportInterval > 0 {

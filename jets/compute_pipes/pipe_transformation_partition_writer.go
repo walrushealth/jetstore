@@ -10,7 +10,6 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/fraugster/parquet-go/parquet"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
@@ -141,6 +140,7 @@ func (ctx *PartitionWriterTransformationPipe) Apply(input *[]interface{}) error 
 			externalBucket: &ctx.externalBucket,
 			s3BasePath:     ctx.baseOutputPath,
 			fileName:       &partitionFileName,
+			nodeId:         ctx.nodeId,
 			doneCh:         ctx.doneCh,
 			errCh:          ctx.errCh,
 		}
@@ -172,7 +172,7 @@ func (ctx *PartitionWriterTransformationPipe) Apply(input *[]interface{}) error 
 			case "csv_writer":
 				fnc = s3DeviceWriter.WriteCsvPartition
 			case "parquet_writer":
-				fnc = s3DeviceWriter.WriteParquetPartition
+				fnc = s3DeviceWriter.WriteParquetPartitionV2
 			case "fixed_width_writer":
 				fnc = s3DeviceWriter.WriteFixedWidthPartition
 			}
@@ -387,28 +387,16 @@ func (ctx *BuilderContext) NewPartitionWriterTransformationPipe(source *InputCha
 		//*TODO Cannot use parquet with output_channel with dynamic columns, need to defer the construction of the schema
 		switch config.DeviceWriterType {
 		case "parquet_writer":
-			if spec.OutputChannel.UseInputParquetSchema {
+			switch {
+			case spec.OutputChannel.UseInputParquetSchema:
+				// log.Println("** parquet_writer: Using schema from input file")
 				parquetSchema = ctx.inputParquetSchema
-			} else {
-				var buf strings.Builder
-				buf.WriteString(fmt.Sprintf("message %s {\n", spec.OutputChannel.Name))
-				for i := range outputCh.config.Columns {
-					buf.WriteString(fmt.Sprintf("optional binary %s (UTF8);\n", outputCh.config.Columns[i]))
-				}
-				buf.WriteString("}\n")
-				var compression string
-				switch spec.OutputChannel.Compression {
-				case "snappy":
-					compression = parquet.CompressionCodec_SNAPPY.String()
-				case "none":
-					compression = parquet.CompressionCodec_UNCOMPRESSED.String()
-				default:
-					compression = parquet.CompressionCodec_UNCOMPRESSED.String()
-				}
-				parquetSchema = &ParquetSchemaInfo{
-					Schema:      buf.String(),
-					Compression: compression,
-				}
+			case spec.OutputChannel.ParquetSchema != nil:
+				// log.Println("** parquet_writer: Using schema from output channel config")
+				parquetSchema = spec.OutputChannel.ParquetSchema
+			default:
+				// log.Println("** parquet_writer: Constructing a default schema")
+				parquetSchema = BuildParquetSchemaInfo(outputCh.config.Columns)
 			}
 		}
 	}
@@ -423,17 +411,17 @@ func (ctx *BuilderContext) NewPartitionWriterTransformationPipe(source *InputCha
 		baseOutputPath = fmt.Sprintf("%s/process_name=%s/session_id=%s/step_id=%s/jets_partition=%s",
 			jetsS3StagePrefix, ctx.processName, ctx.sessionId, spec.OutputChannel.WriteStepId, jetsPartitionLabel)
 	case "output":
-		if len(spec.OutputChannel.OutputLocation) > 0 &&
-			spec.OutputChannel.OutputLocation != "jetstore_s3_input" &&
-			spec.OutputChannel.OutputLocation != "jetstore_s3_output" {
-				outputLocation := doSubstitution(spec.OutputChannel.OutputLocation, "", "", ctx.env)
+		if len(spec.OutputChannel.OutputLocation()) > 0 &&
+			spec.OutputChannel.OutputLocation() != "jetstore_s3_input" &&
+			spec.OutputChannel.OutputLocation() != "jetstore_s3_output" {
+			outputLocation := doSubstitution(spec.OutputChannel.OutputLocation(), "", "", ctx.env)
 			if !strings.HasSuffix(outputLocation, "/") {
 				pos := strings.LastIndex(outputLocation, "/")
 				if pos < 0 {
 					spec.OutputChannel.KeyPrefix = outputLocation
 				} else {
 					spec.OutputChannel.FileName = outputLocation[pos+1:]
-					spec.OutputChannel.KeyPrefix = outputLocation[:pos]	
+					spec.OutputChannel.KeyPrefix = outputLocation[:pos]
 				}
 			} else {
 				pos := len(outputLocation)
@@ -445,7 +433,7 @@ func (ctx *BuilderContext) NewPartitionWriterTransformationPipe(source *InputCha
 			if spec.OutputChannel.Bucket != "jetstore_bucket" {
 				externalBucket = spec.OutputChannel.Bucket
 			}
-		case sp != nil && spec.OutputChannel.OutputLocation == "jetstore_s3_input":
+		case sp != nil && spec.OutputChannel.OutputLocation() == "jetstore_s3_input":
 			externalBucket = sp.Bucket()
 		}
 		if len(externalBucket) > 0 {
@@ -453,10 +441,10 @@ func (ctx *BuilderContext) NewPartitionWriterTransformationPipe(source *InputCha
 		}
 		if len(spec.OutputChannel.KeyPrefix) > 0 {
 			baseOutputPath = doSubstitution(spec.OutputChannel.KeyPrefix, jetsPartitionLabel,
-				spec.OutputChannel.OutputLocation, ctx.env)
+				spec.OutputChannel.OutputLocation(), ctx.env)
 		} else {
 			baseOutputPath = doSubstitution("$PATH_FILE_KEY", jetsPartitionLabel,
-				spec.OutputChannel.OutputLocation, ctx.env)
+				spec.OutputChannel.OutputLocation(), ctx.env)
 		}
 	}
 
@@ -477,6 +465,7 @@ func (ctx *BuilderContext) NewPartitionWriterTransformationPipe(source *InputCha
 	// Register as a client to S3DeviceManager
 	if ctx.s3DeviceManager.ClientsWg != nil {
 		ctx.s3DeviceManager.ClientsWg.Add(1)
+		ctx.s3DeviceManager.ParticipatingTempFolders = append(ctx.s3DeviceManager.ParticipatingTempFolders, localTempDir)
 	} else {
 		log.Panicln("ERROR Expecting ClientsWg not nil")
 	}

@@ -100,31 +100,7 @@ startStepId:
 		return result, nil
 	}
 
-	// Get the source for input_row channel, given by the first input_channel node
-	// By default reducing steps uses compression 'snappy' with 'headerless_csv',
-	// unless specified in InputChannelConfig or when inputChannel is 'input_row' then use 'csv', see below
-	inputFormat := "headerless_csv"
-	compression := "snappy"
 	inputChannelConfig := &pipeConfig[0].InputChannel
-	inputChannelSP := getSchemaProvider(cpipesStartup.CpConfig.SchemaProviders, inputChannelConfig.SchemaProvider)
-	if inputChannelSP != nil {
-		if len(inputChannelSP.Format) > 0 {
-			inputFormat = inputChannelSP.Format
-		}
-		if len(inputChannelSP.Compression) > 0 {
-			compression = inputChannelSP.Compression
-		}
-	}
-	if inputChannelConfig.Format != "" {
-		inputFormat = inputChannelConfig.Format
-	}
-	if inputChannelConfig.Compression != "" {
-		compression = inputChannelConfig.Compression
-	}
-	// Set the input channel with the determined value
-	inputChannelConfig.Format = inputFormat
-	inputChannelConfig.Compression = compression
-
 	mainInputStepId := inputChannelConfig.ReadStepId
 	if len(mainInputStepId) == 0 {
 		return result, fmt.Errorf("configuration error: missing input_channel.read_step_id for first pipe at step %d", stepId)
@@ -143,15 +119,21 @@ startStepId:
 		return result,
 			fmt.Errorf("while querying jets_partition from compute_pipes_partitions_registry: %v", err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		// scan the row
-		var jetsPartition string
-		if err = rows.Scan(&jetsPartition); err != nil {
-			return result,
-				fmt.Errorf("while scanning jetsPartition from compute_pipes_partitions_registry table: %v", err)
+	err = func() error {
+		defer rows.Close()
+		for rows.Next() {
+			// scan the row
+			var jetsPartition string
+			err := rows.Scan(&jetsPartition)
+			if err != nil {
+				return fmt.Errorf("while scanning jetsPartition from compute_pipes_partitions_registry table: %v", err)
+			}
+			partitions = append(partitions, jetsPartition)
 		}
-		partitions = append(partitions, jetsPartition)
+		return nil
+	}()
+	if err != nil {
+		return result, err
 	}
 
 	// Check if there is no partitions for the step, if so move to next step
@@ -210,7 +192,7 @@ startStepId:
 		}
 	}
 
-	// Determine if using esc tasks for this stepId
+	// Determine if using ecs tasks for this stepId
 	result.UseECSReducingTask, err = cpipesStartup.EvalUseEcsTask(stepId)
 	if err != nil {
 		return result, fmt.Errorf("while calling UseECSReducingTask: %v", err)
@@ -222,24 +204,23 @@ startStepId:
 	// Get the input columns from Pipes Config, from the first pipes channel
 	var inputColumns []string
 	inputChannel := inputChannelConfig.Name
-	if inputChannel == "input_row" && inputFormat == "csv" {
-		delimitor := rune(',') // defaults to ',' in reduce mode input unless specified by schema provider
-		if inputChannelSP != nil && inputChannelSP.Delimiter > 0 {
-			delimitor = inputChannelSP.Delimiter
-		}
-		// special case, need to get the input columns from file of first partition
-		fileKeys, err := GetS3FileKeys(cpipesStartup.ProcessName, args.SessionId, mainInputStepId, partitions[0])
+	if inputChannel == "input_row" {
+		// special case, need to get the input columns from cpipes_execution_status table
+		var inputRowColumnsJson string
+		stmt := `SELECT input_row_columns_json FROM jetsapi.cpipes_execution_status WHERE session_id=$1`
+		err = dbpool.QueryRow(ctx, stmt, args.SessionId).Scan(&inputRowColumnsJson)
 		if err != nil {
-			return result, err
+			return result, fmt.Errorf("while querying input_row_columns_json from table cpipes_execution_status: %v", err)
 		}
-		if len(fileKeys) == 0 {
-			return result, fmt.Errorf("error: no files found in partition %s", partitions[0])
-		}
-		fileInfo, err := FetchHeadersAndDelimiterFromFile("", fileKeys[0].key, inputFormat, compression, "", delimitor, true, false, false, "")
+		var inputRowColumns InputRowColumns
+		err = json.Unmarshal([]byte(inputRowColumnsJson), &inputRowColumns)
 		if err != nil {
-			return result, fmt.Errorf("error: could not get input columns from file (reduce mode): %v", err)
+			return result, fmt.Errorf("while unmarshalling input_row_columns_json ->%s<-: %v", inputRowColumnsJson, err)
 		}
-		inputColumns = fileInfo.headers
+		inputColumns = inputRowColumns.MainInput
+		if len(inputColumns) == 0 {
+			return result, fmt.Errorf("error: expecting main input column names from input_row_columns_json: %s", inputRowColumnsJson)
+		}
 	} else {
 		// Get the columns from the channel spec
 		chSpec := GetChannelSpec(cpipesStartup.CpConfig.Channels, inputChannel)

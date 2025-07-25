@@ -158,22 +158,37 @@ func (args *StartComputePipesArgs) StartShardingComputePipes(ctx context.Context
 	if err != nil {
 		return result, mainInputSchemaProvider, fmt.Errorf("while calling SelectActiveOutputTable for stepId %d: %v", stepId, err)
 	}
+	inputChannelConfig := &pipeConfig[0].InputChannel
+	// Validate that the first PipeSpec[0].Input == "input_row"
+	if inputChannelConfig.Name != "input_row" {
+		return result, mainInputSchemaProvider, fmt.Errorf("error: invalid cpipes config, reducing_pipes_config[0][0].input must be 'input_row'")
+	}
 
-	// Check if headers where provided in source_config record or need to determine the csv delimiter
+	// Check if need to get headers from file or if need to determine the csv delimiter
+	// Note: inputChannelConfig is in sync with the mainSchemaProvider
 	fetchHeaders := false
 	fetchDelimitor := false
-	format := &mainInputSchemaProvider.Format
-	if (*format == "csv" || *format == "parquet" || *format == "xlsx") && len(cpipesStartup.InputColumns) == 0 {
+	detectEncoding := false
+	detectCrAsEol := false
+	if len(inputChannelConfig.Encoding) == 0 && inputChannelConfig.DetectEncoding {
+		detectEncoding = true
+	}
+	format := inputChannelConfig.Format
+	if (format == "csv" || format == "xlsx") && len(cpipesStartup.InputColumns) == 0 {
 		fetchHeaders = true
 	}
-	if strings.HasSuffix(*format, "csv") && mainInputSchemaProvider.Delimiter == 0 {
-		fetchDelimitor = true
+	if strings.HasSuffix(format, "csv") {
+		if inputChannelConfig.Delimiter == 0 {
+			fetchDelimitor = true
+		}
+		detectCrAsEol = inputChannelConfig.DetectCrAsEol
 	}
-	if fetchHeaders || fetchDelimitor || mainInputSchemaProvider.DetectEncoding {
+	if fetchHeaders || fetchDelimitor || detectEncoding || detectCrAsEol {
 		// Get the input columns / column separator from the first file
 		sp := mainInputSchemaProvider
 		fileInfo, err := FetchHeadersAndDelimiterFromFile(sp.Bucket, shardResult.firstKey, sp.Format,
-			sp.Compression, sp.Encoding, sp.Delimiter, fetchHeaders, fetchDelimitor, sp.DetectEncoding, sp.InputFormatDataJson)
+			sp.Compression, sp.Encoding, sp.Delimiter, fetchHeaders, fetchDelimitor,
+			detectEncoding, detectCrAsEol, sp.InputFormatDataJson)
 		if err != nil {
 			return result, mainInputSchemaProvider,
 				fmt.Errorf("while calling FetchHeadersAndDelimiterFromFile('%s', '%s', '%s', '%s'): %v",
@@ -184,31 +199,49 @@ func (args *StartComputePipesArgs) StartShardingComputePipes(ctx context.Context
 		}
 		if fileInfo.sepFlag != 0 {
 			sp.Delimiter = rune(fileInfo.sepFlag)
+			inputChannelConfig.Delimiter = sp.Delimiter
 		}
 		if len(fileInfo.encoding) > 0 {
 			sp.Encoding = fileInfo.encoding
+			inputChannelConfig.Encoding = fileInfo.encoding
+		}
+		if fileInfo.eolByte > 0 {
+			sp.EolByte = fileInfo.eolByte
+			inputChannelConfig.EolByte = fileInfo.eolByte
 		}
 	}
 	// log.Printf("*** cpipesStartup.MainInputDomainKeysSpec: %v, cpipesStartup.MainInputDomainClass: %v\n",
 	// 	cpipesStartup.MainInputDomainKeysSpec, cpipesStartup.MainInputDomainClass)
 
-	// NOTE: At this point we should have the headers of the input file
-	if len(cpipesStartup.InputColumns) == 0 {
-		return result, mainInputSchemaProvider, fmt.Errorf("configuration error: no header information available for the input file(s)")
+	// NOTE: At this point we should have the headers of the input file (except potentially for parquet file)
+	if len(cpipesStartup.InputColumns) == 0 && len(mainInputSchemaProvider.Headers) > 0 {
+		cpipesStartup.InputColumns = mainInputSchemaProvider.Headers
 	}
+	if len(cpipesStartup.InputColumns) == 0 {
+		if !strings.HasPrefix(format, "parquet") {
+			return result, mainInputSchemaProvider, fmt.Errorf("configuration error: no header information available for the input file(s)")
+		}
+	} else {
+		// Add the headers from the partfile_key_component
+		for i := range cpipesStartup.CpConfig.Context {
+			if cpipesStartup.CpConfig.Context[i].Type == "partfile_key_component" {
+				cpipesStartup.InputColumns = append(cpipesStartup.InputColumns,
+					cpipesStartup.CpConfig.Context[i].Key)
+			}
+		}
 
-	// Add the headers from the partfile_key_component
-	for i := range cpipesStartup.CpConfig.Context {
-		if cpipesStartup.CpConfig.Context[i].Type == "partfile_key_component" {
-			cpipesStartup.InputColumns = append(cpipesStartup.InputColumns,
-				cpipesStartup.CpConfig.Context[i].Key)
+		// Add extra headers to input_row if specified in the channels spec
+		extraInputColumns := GetAdditionalInputColumns(&cpipesStartup.CpConfig)
+		if len(extraInputColumns) > 0 {
+			cpipesStartup.InputColumns = append(cpipesStartup.InputColumns, extraInputColumns...)
 		}
 	}
 
-	// Add extra headers to input_row if specified in the channels spec
-	extraInputColumns := GetAdditionalInputColumns(&cpipesStartup.CpConfig)
-	if len(extraInputColumns) > 0 {
-		cpipesStartup.InputColumns = append(cpipesStartup.InputColumns, extraInputColumns...)
+	inputRowColumnsJson, err := json.Marshal(InputRowColumns{
+		MainInput: cpipesStartup.InputColumns,
+	})
+	if err != nil {
+		return result, mainInputSchemaProvider, err
 	}
 
 	// Set the nbr of concurrent map tasks
@@ -260,13 +293,8 @@ func (args *StartComputePipesArgs) StartShardingComputePipes(ctx context.Context
 	if err != nil {
 		return result, mainInputSchemaProvider, err
 	}
-	inputChannelConfig := &pipeConfig[0].InputChannel
-	// Validate that the first PipeSpec[0].Input == "input_row"
-	if inputChannelConfig.Name != "input_row" {
-		return result, mainInputSchemaProvider, fmt.Errorf("error: invalid cpipes config, reducing_pipes_config[0][0].input must be 'input_row'")
-	}
 
-	// Validate the PipeSpec.TransformationSpec.OutputChannel configuration
+	// Validate the pipeConfig, including PipeSpec.TransformationSpec.OutputChannel configuration
 	err = cpipesStartup.ValidatePipeSpecConfig(&cpipesStartup.CpConfig, pipeConfig)
 	if err != nil {
 		return result, mainInputSchemaProvider, err
@@ -318,9 +346,9 @@ func (args *StartComputePipesArgs) StartShardingComputePipes(ctx context.Context
 	// log.Println(string(shardingConfigJson))
 	// Create entry in cpipes_execution_status
 	stmt := `INSERT INTO jetsapi.cpipes_execution_status 
-						(pipeline_execution_status_key, session_id, cpipes_config_json) 
-						VALUES ($1, $2, $3)`
-	_, err2 := dbpool.Exec(ctx, stmt, args.PipelineExecKey, args.SessionId, string(shardingConfigJson))
+						(pipeline_execution_status_key, session_id, cpipes_config_json, input_row_columns_json) 
+						VALUES ($1, $2, $3, $4)`
+	_, err2 := dbpool.Exec(ctx, stmt, args.PipelineExecKey, args.SessionId, string(shardingConfigJson), string(inputRowColumnsJson))
 	if err2 != nil {
 		return result, mainInputSchemaProvider, fmt.Errorf("error inserting in jetsapi.cpipes_execution_status table: %v", err2)
 	}

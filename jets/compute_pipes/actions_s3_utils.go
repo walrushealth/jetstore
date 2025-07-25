@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
@@ -59,11 +60,11 @@ func GetFileKeys(ctx context.Context, dbpool *pgxpool.Pool, sessionId string, no
 		// scan the row
 		var fileKeyInfo FileKeyInfo
 		if err = rows.Scan(
-			&fileKeyInfo.key, 
+			&fileKeyInfo.key,
 			&fileKeyInfo.size,
 			&fileKeyInfo.start,
 			&fileKeyInfo.end,
-			); err != nil {
+		); err != nil {
 			return nil, err
 		}
 		fileKeys = append(fileKeys, &fileKeyInfo)
@@ -75,17 +76,27 @@ func (cpCtx *ComputePipesContext) DownloadS3Files(inFolderPath, externalBucket s
 	go func() {
 		defer close(cpCtx.FileNamesCh)
 		defer close(cpCtx.DownloadS3ResultCh)
+		// Check if we need to download the files or not (see StartMergeFiles)
+		if !cpCtx.startDownloadFiles() {
+			return
+		}
 		var inFilePath string
 		var fileSize, totalFilesSize int64
 		var err error
+		var fullDownload bool
+		inputFormat := cpCtx.CpConfig.PipesConfig[0].InputChannel.Format
+		if strings.HasPrefix(inputFormat, "parquet") {
+			fullDownload = true
+		}
 		if cpCtx.CpConfig.ClusterConfig.IsDebugMode {
 			log.Printf("%s node %d %s Start downloading %d files from s3",
 				cpCtx.SessionId, cpCtx.NodeId, cpCtx.MainInputStepId, len(fileKeys))
 		}
 		for i := range fileKeys {
+			fileKeys[i].fullDownload = fullDownload
 			if cpCtx.CpConfig.ClusterConfig.IsDebugMode {
-				log.Printf("%s node %d %s Downloading file from s3: %s",
-					cpCtx.SessionId, cpCtx.NodeId, cpCtx.MainInputStepId, fileKeys[i].key)
+				log.Printf("%s node %d %s Downloading (full download? %v) file from s3: %s",
+					cpCtx.SessionId, cpCtx.NodeId, cpCtx.MainInputStepId, fullDownload, fileKeys[i].key)
 			}
 			retry := 0
 		do_retry:
@@ -143,7 +154,7 @@ func DownloadS3Object(externalBucket string, s3Key *FileKeyInfo, localDir string
 	inFilePath = fileHd.Name()
 
 	var byteRange *string
-	if s3Key.end > 0 {
+	if !s3Key.fullDownload && s3Key.end > 0 {
 		s := fmt.Sprintf("bytes=%d-%d", s3Key.start, s3Key.end)
 		byteRange = &s
 	}

@@ -9,8 +9,6 @@ import (
 	"strings"
 
 	"github.com/artisoft-io/jetstore/jets/csv"
-	"github.com/fraugster/parquet-go/parquet"
-	"github.com/fraugster/parquet-go/parquetschema"
 )
 
 // firstInputRow is the first row from the input channel.
@@ -42,10 +40,12 @@ import (
 //	"max_date",
 //	"min_double",
 //	"max_double",
+//	"large_double_pct",
 //	"min_length",
 //	"max_length",
 //	"min_value",
 //	"max_value",
+//	"large_value_pct",
 //	"minmax_type"
 //
 // Note: for min_value/max_value are determined based on this priority rule:
@@ -66,7 +66,7 @@ import (
 // inputDataType contains the data type for each column according to the parquet schema.
 // inputDataType is a map of column name -> input data type
 // Range of value for input data type: string (default if not parquet), bool, int32, int64,
-// float32, float64, date, unknown
+// float32, float64, date, uint32, uint64
 type AnalyzeTransformationPipe struct {
 	cpConfig         *ComputePipesConfig
 	source           *InputChannel
@@ -74,22 +74,39 @@ type AnalyzeTransformationPipe struct {
 	inputDataType    map[string]string
 	analyzeState     []*AnalyzeState
 	columnEvaluators []TransformationColumnEvaluator
-	firstInputRow    *[]interface{}
+	nbrRowsAnalyzed  int
+	firstInputRow    *[]any
 	spec             *TransformationSpec
-	env              map[string]interface{}
+	padShortRows     bool
+	env              map[string]any
 	doneCh           chan struct{}
 }
 
 // Implementing interface PipeTransformationEvaluator
-func (ctx *AnalyzeTransformationPipe) Apply(input *[]interface{}) error {
+func (ctx *AnalyzeTransformationPipe) Apply(input *[]any) error {
 	var err error
 	if input == nil {
 		return fmt.Errorf("error: unexpected null input arg in AnalyzeTransformationPipe")
 	}
+	inputLen := len(*input)
+	expectedLen := len(ctx.source.config.Columns)
+	if inputLen < expectedLen {
+		if ctx.padShortRows {
+			for range expectedLen - inputLen {
+				*input = append(*input, nil)
+			}
+		} else {
+			// Skip the row
+			log.Println("*** AnalyzeTransformationPipe.Aplyt: INVALID ROW LEN", inputLen, "expecting", expectedLen, "columns")
+			return nil
+		}
+	}
+
 	if ctx.firstInputRow == nil {
 		ctx.firstInputRow = input
 	}
-	for i := range *input {
+	ctx.nbrRowsAnalyzed++
+	for i := range expectedLen {
 		analyzeState := ctx.analyzeState[i]
 		err = analyzeState.NewValue((*input)[i])
 		if err != nil {
@@ -105,8 +122,17 @@ func (ctx *AnalyzeTransformationPipe) Apply(input *[]interface{}) error {
 func (ctx *AnalyzeTransformationPipe) Done() error {
 	// For each column state in ctx.analyzeState, send out a row to ctx.outputCh
 	var ok bool
+	if ctx.firstInputRow == nil {
+		err := fmt.Errorf("error: AnalyzeTransformationPipe.Done firstInputRow is null, nbr rows analyzed is %d",
+			ctx.nbrRowsAnalyzed)
+		log.Println(err)
+		return err
+	}
+	if ctx.cpConfig.ClusterConfig.IsDebugMode {
+		log.Printf("AnalyzeTransformationPipe.Done: Number of rows analyzed is %d", ctx.nbrRowsAnalyzed)
+	}
 	for _, state := range ctx.analyzeState {
-		outputRow := make([]interface{}, len(*ctx.outputCh.columns))
+		outputRow := make([]any, len(*ctx.outputCh.columns))
 
 		// The first base columns
 		var ipos int
@@ -259,6 +285,7 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 
 		// The functions tokens
 		var dateMinMax, doubleMinMax, textMinMax, winningValue *MinMaxValue
+		var dateLargeValue, doubleLargeValue, textLargeValue, winningLargeValue *LargeValue
 		for _, fc := range state.FunctionMatch {
 			m := fc.GetMatchToken()
 			for token, count := range m {
@@ -282,6 +309,17 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 					textMinMax = minMax
 				}
 			}
+			largeValues := fc.GetLargeValue()
+			if largeValues != nil {
+				switch largeValues.ValueType {
+				case "date":
+					dateLargeValue = largeValues
+				case "double":
+					doubleLargeValue = largeValues
+				case "text":
+					textLargeValue = largeValues
+				}
+			}
 		}
 		// Pick the winning minmax results
 		nonNilCount := state.TotalRowCount - state.NullCount
@@ -289,10 +327,13 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 			switch {
 			case dateMinMax != nil && 2*dateMinMax.HitCount > nonNilCount:
 				winningValue = dateMinMax
+				winningLargeValue = dateLargeValue
 			case doubleMinMax != nil && 4*doubleMinMax.HitCount > 3*nonNilCount:
 				winningValue = doubleMinMax
+				winningLargeValue = doubleLargeValue
 			default:
 				winningValue = textMinMax
+				winningLargeValue = textLargeValue
 			}
 
 			// Assign to output columns
@@ -306,6 +347,16 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 					outputRow[ipos] = dateMinMax.MaxValue
 				}
 			}
+			if dateLargeValue != nil {
+				ipos, ok = (*ctx.outputCh.columns)["large_date_pct"]
+				if ok {
+					if ratioFactor > 0 {
+						outputRow[ipos] = dateLargeValue.HitCount * ratioFactor
+					} else {
+						outputRow[ipos] = -1.0
+					}
+				}
+			}
 			if doubleMinMax != nil {
 				ipos, ok = (*ctx.outputCh.columns)["min_double"]
 				if ok {
@@ -316,6 +367,16 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 					outputRow[ipos] = doubleMinMax.MaxValue
 				}
 			}
+			if doubleLargeValue != nil {
+				ipos, ok = (*ctx.outputCh.columns)["large_double_pct"]
+				if ok {
+					if ratioFactor > 0 {
+						outputRow[ipos] = doubleLargeValue.HitCount * ratioFactor
+					} else {
+						outputRow[ipos] = -1.0
+					}
+				}
+			}
 			if textMinMax != nil {
 				ipos, ok = (*ctx.outputCh.columns)["min_length"]
 				if ok {
@@ -324,6 +385,16 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 				ipos, ok = (*ctx.outputCh.columns)["max_length"]
 				if ok {
 					outputRow[ipos] = textMinMax.MaxValue
+				}
+			}
+			if textLargeValue != nil {
+				ipos, ok = (*ctx.outputCh.columns)["large_text_pct"]
+				if ok {
+					if ratioFactor > 0 {
+						outputRow[ipos] = textLargeValue.HitCount * ratioFactor
+					} else {
+						outputRow[ipos] = -1.0
+					}
 				}
 			}
 			if winningValue != nil {
@@ -340,6 +411,16 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 					outputRow[ipos] = winningValue.MinMaxType
 				}
 			}
+			if winningLargeValue != nil {
+				ipos, ok = (*ctx.outputCh.columns)["large_value_pct"]
+				if ok {
+					if ratioFactor > 0 {
+						outputRow[ipos] = winningLargeValue.HitCount * ratioFactor
+					} else {
+						outputRow[ipos] = -1.0
+					}
+				}
+			}
 		}
 
 		// Add the carry over select and const values
@@ -348,7 +429,11 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 		for i := range ctx.columnEvaluators {
 			err := ctx.columnEvaluators[i].Update(&outputRow, ctx.firstInputRow)
 			if err != nil {
-				err = fmt.Errorf("while calling column transformation from analyze operator: %v", err)
+				err = fmt.Errorf(
+					"while adding the carry over select and const values from analyze operator for column %s (at pos %d): %v",
+					state.ColumnName,
+					state.ColumnPos,
+					err)
 				log.Println(err)
 				return err
 			}
@@ -375,14 +460,9 @@ func (ctx *BuilderContext) NewAnalyzeTransformationPipe(source *InputChannel, ou
 	var err error
 	if spec == nil {
 		return nil, fmt.Errorf(
-			"error: Analyze Pipe Transformation spec (analyze_config) is missing regex, lookup, and/or keywords definition")
+			"error: Analyze Pipe Transformation spec (analyze_config) is null")
 	}
 	config := spec.AnalyzeConfig
-	if config == nil || config.RegexTokens == nil ||
-		config.LookupTokens == nil || config.KeywordTokens == nil {
-		return nil, fmt.Errorf(
-			"error: Analyze Pipe Transformation spec (analyze_config) is missing regex, lookup, and/or keywords definition")
-	}
 	// Must have NewRecord set to true
 	spec.NewRecord = true
 
@@ -390,13 +470,15 @@ func (ctx *BuilderContext) NewAnalyzeTransformationPipe(source *InputChannel, ou
 	inputDataType := make(map[string]string, len(source.config.Columns))
 	parquetSchemaInfo := ctx.inputParquetSchema
 	if parquetSchemaInfo != nil {
-		schemaDef, err := parquetschema.ParseSchemaDefinition(parquetSchemaInfo.Schema)
-		if err != nil {
-			return nil, fmt.Errorf("parsing schema definition failed in NewAnalyzeTransformationPipe: %v", err)
-		}
-		for _, colDef := range schemaDef.RootColumn.Children {
-			se := colDef.SchemaElement
-			inputDataType[se.Name] = SchemaElementDataType(se)
+		for _, field := range parquetSchemaInfo.Fields {
+			switch field.Type {
+			case "utf8":
+				inputDataType[field.Name] = "string"
+			case "date32":
+				inputDataType[field.Name] = "date"
+			default:
+				inputDataType[field.Name] = field.Type
+			}
 		}
 	} else {
 		for i := range source.config.Columns {
@@ -439,36 +521,9 @@ func (ctx *BuilderContext) NewAnalyzeTransformationPipe(source *InputChannel, ou
 		inputDataType:    inputDataType,
 		analyzeState:     analyzeState,
 		columnEvaluators: columnEvaluators,
+		padShortRows:     config.PadShortRowsWithNulls,
 		spec:             spec,
 		env:              ctx.env,
 		doneCh:           ctx.done,
 	}, nil
-}
-
-func SchemaElementDataType(se *parquet.SchemaElement) string {
-	switch *se.Type {
-	case parquet.Type_BOOLEAN:
-		return "bool"
-	case parquet.Type_INT32:
-		// Check if it's a date
-		if se.ConvertedType != nil && *se.ConvertedType == parquet.ConvertedType_DATE {
-			return "date"
-		}
-		return "int32"
-
-	case parquet.Type_INT64:
-		return "int64"
-
-	case parquet.Type_FLOAT:
-		return "float32"
-
-	case parquet.Type_DOUBLE:
-		return "float64"
-
-	case parquet.Type_BYTE_ARRAY, parquet.Type_FIXED_LEN_BYTE_ARRAY:
-		return "string"
-
-	default:
-		return "unknown"
-	}
 }

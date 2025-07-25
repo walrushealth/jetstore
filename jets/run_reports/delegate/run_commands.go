@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
@@ -40,7 +41,7 @@ func (ctx *CommandWorker) DoWork(workersTaskCh <-chan any) {
 		case compute_pipes.S3CopyFileSpec:
 			// Do work here
 			err := awsi.MultiPartCopy(ctx.ctx, ctx.s3Client, vv.WorkerPoolSize,
-				vv.SourceBucket, vv.SourceKey, vv.DestinationBucket, vv.DestinationKey)
+				vv.SourceBucket, vv.SourceKey, vv.DestinationBucket, vv.DestinationKey, false)
 			if err != nil {
 				ctx.sendError(err)
 			}
@@ -82,7 +83,7 @@ func (ca *CommandArguments) RunSchemaProviderReportsCmds(ctx context.Context, db
 	}
 	var schemaProviderJson string
 	schemaProviderJson, err = datatable.GetSchemaProviderJsonFromPipelineSession(dbpool, ca.SessionId)
-	if err != nil {
+	if err != nil && !strings.Contains(err.Error(), "no rows in result set") {
 		errCh <- fmt.Errorf("query pipeline_execution_status failed: %v", err)
 	}
 	if len(schemaProviderJson) == 0 {
@@ -168,5 +169,4 @@ func (ca *CommandArguments) RunSchemaProviderReportsCmds(ctx context.Context, db
 			return
 		}
 	}
-	return
 }

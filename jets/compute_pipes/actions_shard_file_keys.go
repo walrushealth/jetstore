@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
+	"strings"
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
 	"github.com/jackc/pgx/v4"
@@ -14,6 +16,8 @@ import (
 // Contains action or functions invoked by process tasks
 // Action to assign input file keys to nodes aka shards.
 // Assign file_key to shard into jetsapi.compute_pipes_shard_registry
+
+var sentinelFileName string = os.Getenv("JETS_SENTINEL_FILE_NAME")
 
 type ShardFileKeyResult struct {
 	clusterShardingInfo *ClusterShardingInfo
@@ -57,13 +61,13 @@ func ShardFileKeys(exeCtx context.Context, dbpool *pgxpool.Pool, baseFileKey str
 	if result.clusterSpec.ShardSizeBy > 0 {
 		shardSize = int64(result.clusterSpec.ShardSizeBy)
 	} else {
-		shardSize = int64(result.clusterSpec.ShardSizeMb) * 1024 * 1024
+		shardSize = int64(result.clusterSpec.ShardSizeMb * 1024 * 1024)
 	}
 
 	if result.clusterSpec.ShardMaxSizeBy > 0 {
 		maxShardSize = int64(result.clusterSpec.ShardMaxSizeBy)
 	} else {
-		maxShardSize = int64(result.clusterSpec.ShardMaxSizeMb) * 1024 * 1024
+		maxShardSize = int64(result.clusterSpec.ShardMaxSizeMb * 1024 * 1024)
 	}
 
 	offset = int64(cpConfig.ClusterConfig.ShardOffset)
@@ -73,7 +77,7 @@ func ShardFileKeys(exeCtx context.Context, dbpool *pgxpool.Pool, baseFileKey str
 	if offset > 0 {
 		// Determine if we can split large files
 		switch schemaProviderConfig.Format {
-		case "csv", "headerless_csv", "fixed_width":
+		case "csv", "headerless_csv", "fixed_width", "parquet", "parquet_select":
 			doSplitFiles = true
 		}
 	}
@@ -150,9 +154,13 @@ func assignShardInfo(s3Objects []*awsi.S3Object, shardSize, maxShardSize, offset
 	doSplitFiles bool, sessionId string) ([][]any, int) {
 
 	shardRegistryRows := make([][]any, 0, len(s3Objects))
+	hasSentinelFile := len(sentinelFileName) > 0
 	var currentShardId int
 	var currentShardSize int64
 	for _, obj := range s3Objects {
+		if obj.Size == 0 || (hasSentinelFile && strings.HasSuffix(obj.Key, sentinelFileName)) {
+			continue
+		}
 		if obj.Size > maxShardSize && doSplitFiles {
 			// Split the file into chunks
 			var start, nextStart int64
@@ -223,7 +231,7 @@ func selectClusterShardingTier(totalSizeMb int, clusterConfig *ClusterSpec) *Clu
 	}
 	for _, spec := range clusterConfig.ClusterShardingTiers {
 		if totalSizeMb >= spec.WhenTotalSizeGe {
-			log.Printf("selectClusterShardingTier: totalSizeMb: %d, spec.WhenTotalSizeGe: %d, select MaxNbrPartions: %d, shard size: %d, MaxConcurrency: %d",
+			log.Printf("selectClusterShardingTier: totalSizeMb: %d, spec.WhenTotalSizeGe: %d, select MaxNbrPartions: %d, shard size: %v, MaxConcurrency: %d",
 				totalSizeMb, spec.WhenTotalSizeGe, spec.MaxNbrPartitions, spec.ShardSizeMb, spec.MaxConcurrency)
 			if spec.ShardSizeMb == 0 && spec.ShardMaxSizeBy == 0 {
 				spec.ShardMaxSizeMb = clusterConfig.DefaultShardSizeMb

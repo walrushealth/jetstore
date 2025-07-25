@@ -1,6 +1,7 @@
 package compute_pipes
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,15 +18,16 @@ import (
 // This file contains functions to fetch a file from s3 and read it's columns header.
 // This is all done synchronously.
 
-type FileInfo struct {
+type FetchFileInfoResult struct {
 	headers  []string
 	sepFlag  jcsv.Chartype
 	encoding string
+	eolByte  byte
 }
 
 // Main function
 func FetchHeadersAndDelimiterFromFile(externalBucket, fileKey, fileFormat, compression, encoding string, delimitor rune,
-	fetchHeaders, fetchDelimitor, fetchEncoding bool, fileFormatDataJson string) (*FileInfo, error) {
+	fetchHeaders, fetchDelimitor, fetchEncoding, detectCrAsEol bool, fileFormatDataJson string) (*FetchFileInfoResult, error) {
 	var fileHd *os.File
 	var err error
 	var sepFlag jcsv.Chartype
@@ -34,7 +36,7 @@ func FetchHeadersAndDelimiterFromFile(externalBucket, fileKey, fileFormat, compr
 		// log.Printf("*** FetchHeadersAndDelimiterFromFile: provided delimiter %d is %s\n", delimitor, string([]rune{delimitor}))
 		sepFlag = jcsv.Chartype(delimitor)
 	}
-	fileInfo := &FileInfo{
+	fileInfo := &FetchFileInfoResult{
 		encoding: encoding,
 		sepFlag:  sepFlag,
 	}
@@ -56,8 +58,10 @@ func FetchHeadersAndDelimiterFromFile(externalBucket, fileKey, fileFormat, compr
 	var byteRange *string
 	switch fileFormat {
 	case "csv", "headerless_csv", "fixed_width":
-		s := "bytes=0-50000"
-		byteRange = &s
+		if compression == "none" {
+			s := "bytes=0-50000"
+			byteRange = &s
+		}
 	}
 	retry := 0
 do_retry:
@@ -81,18 +85,28 @@ do_retry:
 			if err != nil {
 				return nil, err
 			}
-			fmt.Println("Detected sep_flag:", fileInfo.sepFlag)
+			log.Println("Detected sep_flag:", fileInfo.sepFlag)
 		}
 		if fetchEncoding {
 			fileInfo.encoding, err = DetectFileEncoding(fileHd)
 			if err != nil {
 				return nil, err
 			}
-			fmt.Println("Detected encoding:", fileInfo.encoding)
+			log.Println("Detected encoding:", fileInfo.encoding)
+		}
+		if detectCrAsEol {
+			b, err := DetectCrAsEol(fileHd, compression)
+			if err != nil {
+				return nil, err
+			}
+			if b {
+				log.Println("Warning: the file does not contains \\n, using \\r as eol")
+				fileInfo.eolByte = '\r'
+			}
 		}
 		if fetchHeaders {
 			fileInfo.headers, err = GetRawHeadersCsv(fileHd, fileKey, fileFormat,
-				compression, fileInfo.sepFlag, fileInfo.encoding)
+				compression, fileInfo.sepFlag, fileInfo.encoding, fileInfo.eolByte)
 		}
 		return fileInfo, err
 
@@ -113,7 +127,7 @@ do_retry:
 			if err != nil {
 				return nil, err
 			}
-			fmt.Println("Detected encoding:", fileInfo.encoding)
+			log.Println("Detected encoding:", fileInfo.encoding)
 			return fileInfo, err
 		} else {
 			return nil,
@@ -142,24 +156,31 @@ do_retry:
 // Get the raw headers from fileHd, put them in *ic
 // Use *sepFlag as the csv delimiter
 func GetRawHeadersCsv(fileHd *os.File, fileName, fileFormat, compression string, sepFlag jcsv.Chartype,
-	encoding string) ([]string, error) {
+	encoding string, eolByte byte) ([]string, error) {
 	var err error
 	utfReader, err := WrapReaderWithDecoder(WrapReaderWithDecompressor(fileHd, compression), encoding)
 	if err != nil {
 		return nil, err
 	}
 	csvReader := csv.NewReader(utfReader)
+	csvReader.KeepRawRecord = true
 	if sepFlag != 0 {
 		csvReader.Comma = rune(sepFlag)
+	}
+	if eolByte > 0 {
+		csvReader.EolByte = eolByte
 	}
 
 	// Read the file headers
 	ic, err := csvReader.Read()
 	// log.Printf("*** GetRawHeadersCsv: got %d headers, err?: %v\n", len(ic), err)
 	if err == io.EOF {
-		return nil, errors.New("input csv file is empty")
+		return nil, errors.New("input csv file is empty (GetRawHeadersCsv)")
 	} else if err != nil {
-		return nil, fmt.Errorf("while reading csv headers: %v", err)
+		err = fmt.Errorf("while reading csv headers (GetRawHeadersCsv): %v", err)
+		b, _ := json.Marshal(string(csvReader.LastRawRecord()))
+		log.Printf("%v: raw record as json string:\n%s", err, string(b))
+		return nil, err
 	}
 	// Make sure we don't have empty names in rawHeaders
 	AdjustFillers(&ic)

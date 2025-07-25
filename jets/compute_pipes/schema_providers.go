@@ -28,31 +28,37 @@ func NewSchemaManager(spec []*SchemaProviderSpec,
 type SchemaProvider interface {
 	Initialize(dbpool *pgxpool.Pool, spec *SchemaProviderSpec,
 		envSettings map[string]interface{}, isDebugMode bool) error
-	Bucket() string
 	Key() string
-	SchemaName() string
-	Format() string
-	Encoding() string
-	DetectEncoding() bool
+	Env() map[string]any
+	AdjustColumnWidth(width map[string]int) error
+	BadRowsConfig() *BadRowsSpec
+	Bucket() string
+	ColumnNames() []string
+	Columns() []SchemaColumnSpec
 	Compression() string
-	InputFormatDataJson() string
+	Delimiter() rune
+	DetectEncoding() bool
 	DomainClass() string
 	DomainKeys() map[string]any
+	Encoding() string
+	EnforceRowMaxLength() bool
+	EnforceRowMinLength() bool
+	FixedWidthEncodingInfo() *FixedWidthEncodingInfo
+	FixedWidthFileHeaders() ([]string, string)
+	Format() string
+	InputFormatDataJson() string
 	IsPartFiles() bool
-	Delimiter() rune
+	NbrRowsInRecord() int64
+	NoQuotes() bool
+	ParquetSchema() *ParquetSchemaInfo
+	QuoteAllRecords() bool
+	ReadBatchSize() int64
+	ReadDateLayout() string
+	SchemaName() string
+	TrimColumns() bool
 	UseLazyQuotes() bool
 	VariableFieldsPerRecord() bool
-	QuoteAllRecords() bool
-	NoQuotes() bool
-	TrimColumns() bool
-	Columns() []SchemaColumnSpec
-	ColumnNames() []string
-	ReadDateLayout() string
 	WriteDateLayout() string
-	AdjustColumnWidth(width map[string]int) error
-	FixedWidthFileHeaders() ([]string, string)
-	FixedWidthEncodingInfo() *FixedWidthEncodingInfo
-	Env() map[string]any
 }
 
 // columnNames is the list of file headers for fixed_width
@@ -104,11 +110,14 @@ func (sp *DefaultSchemaProvider) Initialize(_ *pgxpool.Pool, spec *SchemaProvide
 	if spec.Format == "fixed_width" {
 		return sp.initializeFixedWidthInfo()
 	}
-	if len(sp.spec.Columns) > 0 {
+	switch {
+	case len(sp.spec.Columns) > 0:
 		sp.columnNames = make([]string, 0, len(sp.spec.Columns))
 		for i := range sp.spec.Columns {
 			sp.columnNames = append(sp.columnNames, sp.spec.Columns[i].Name)
 		}
+	case len(sp.spec.Headers) > 0:
+		sp.columnNames = sp.spec.Headers
 	}
 	return nil
 }
@@ -180,6 +189,27 @@ func (sp *DefaultSchemaProvider) Format() string {
 	return sp.spec.Format
 }
 
+func (sp *DefaultSchemaProvider) NbrRowsInRecord() int64 {
+	if sp == nil {
+		return 0
+	}
+	return sp.spec.NbrRowsInRecord
+}
+
+func (sp *DefaultSchemaProvider) ParquetSchema() *ParquetSchemaInfo {
+	if sp == nil {
+		return nil
+	}
+	return sp.spec.ParquetSchema
+}
+
+func (sp *DefaultSchemaProvider) ReadBatchSize() int64 {
+	if sp == nil {
+		return 0
+	}
+	return sp.spec.ReadBatchSize
+}
+
 func (sp *DefaultSchemaProvider) Encoding() string {
 	if sp == nil {
 		return ""
@@ -248,6 +278,27 @@ func (sp *DefaultSchemaProvider) VariableFieldsPerRecord() bool {
 		return false
 	}
 	return sp.spec.VariableFieldsPerRecord
+}
+
+func (sp *DefaultSchemaProvider) EnforceRowMinLength() bool {
+	if sp == nil {
+		return false
+	}
+	return sp.spec.EnforceRowMinLength
+}
+
+func (sp *DefaultSchemaProvider) EnforceRowMaxLength() bool {
+	if sp == nil {
+		return false
+	}
+	return sp.spec.EnforceRowMaxLength
+}
+
+func (sp *DefaultSchemaProvider) BadRowsConfig() *BadRowsSpec {
+	if sp == nil {
+		return nil
+	}
+	return sp.spec.BadRowsConfig
 }
 
 func (sp *DefaultSchemaProvider) QuoteAllRecords() bool {

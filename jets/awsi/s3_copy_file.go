@@ -15,29 +15,40 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-var fileSizeCutoff int64 = 500 * 1024 * 1024 // file less than 500 MB using single shot copy
+var fileSizeCutoff int64 = 100 * 1024 * 1024 // file less than 100 MB using single shot copy
 var fileSizeMidPoint int64 = 10 * 1024 * 1024 * 1024
 
 var smallChunk int64 = 25 * 1024 * 1024 // multi part: part size of 25 MB for file size < 10 GB
 var bigChunk int64 = 100 * 1024 * 1024  // multi part: part size of 100 MB for files > 10 GB
 
 // helper function to build the string for the range of bits to copy
-func buildCopySourceRange(start, partSize, objectSize int64) string {
+func buildCopySourceRange(start, partSize, objectSize int64) (bool, string) {
 	end := start + partSize - 1
-	if end > objectSize {
+	isLastPart := false
+	if end >= objectSize || objectSize - end < partSize {
 		end = objectSize - 1
+		isLastPart = true
 	}
-	return fmt.Sprintf("bytes=%d-%d", start, end)
+	return isLastPart, fmt.Sprintf("bytes=%d-%d", start, end)
 }
 
 // function that starts, perform each part upload, and completes the copy
 func MultiPartCopy(ctx context.Context, svc *s3.Client, maxPoolSize int,
-	srcBucket string, srcKey string, destBucket string, destKey string) error {
+	srcBucket string, srcKey string, destBucket string, destKey string, debug bool) error {
+	if maxPoolSize == 0 {
+		maxPoolSize = 20
+	}
+	if len(srcBucket) == 0 {
+		srcBucket = JetStoreBucket()
+	}
+	if len(destBucket) == 0 {
+		destBucket = JetStoreBucket()
+	}
 
-	// Get the size of the source file
-	fileSize, err := GetObjectSize(svc, srcBucket, srcKey)
+	// Get the list of obj and their size
+	s3Objects, err := ListS3ObjectsV2(svc, srcBucket, &srcKey)
 	if err != nil {
-		if strings.Contains(err.Error(), "NoSuchKey") {
+		if strings.Contains(err.Error(), "NoSuchKey") || len(s3Objects) == 0 {
 			log.Printf(
 				"warning: in MultiPartCopy, source file key %s/%s does not exist, skipping file copy",
 				srcBucket, srcKey)
@@ -45,11 +56,15 @@ func MultiPartCopy(ctx context.Context, svc *s3.Client, maxPoolSize int,
 		}
 		return fmt.Errorf("while getting the file size: %v", err)
 	}
-	copySource := url.QueryEscape(fmt.Sprintf("/%s/%s", srcBucket, srcKey))
+	var totalFileSize int64
+	for i := range s3Objects {
+		totalFileSize += s3Objects[i].Size
+	}
 
-	if fileSize < fileSizeCutoff {
+	if totalFileSize < fileSizeCutoff && len(s3Objects) == 1 {
 		// Do the copy in one shot
-		log.Printf("Copying using single part for file %s of size %d", srcKey, fileSize)
+		copySource := url.QueryEscape(fmt.Sprintf("%s/%s", srcBucket, s3Objects[0].Key))
+		log.Printf("Copying using single part for file %s of size %d", copySource, totalFileSize)
 		copyInput := &s3.CopyObjectInput{
 			CopySource: &copySource,
 			Bucket:     &destBucket,
@@ -64,7 +79,23 @@ func MultiPartCopy(ctx context.Context, svc *s3.Client, maxPoolSize int,
 	}
 
 	// Copy using a multi-part copy action
-	log.Printf("Copying using a multi-part copy for file %s of size %d", srcKey, fileSize)
+	log.Printf("Copying using a multi-part copy for file(s) %s (%d files) of total size %d",
+		srcKey, len(s3Objects), totalFileSize)
+
+	// Sort the obj to make sure the first one is from node 0, in case it's a csv and the first node
+	// put the headers
+	slices.SortFunc(s3Objects, func(lhs, rhs *S3Object) int {
+		a := lhs.Key
+		b := rhs.Key
+		switch {
+		case a < b:
+			return -1
+		case a > b:
+			return 1
+		default:
+			return 0
+		}
+	})
 
 	// Create the multipart upload: get the upload id as it is needed later
 	var uploadId string
@@ -84,10 +115,10 @@ func MultiPartCopy(ctx context.Context, svc *s3.Client, maxPoolSize int,
 
 	maxRetry := 4
 	partSize := smallChunk
-	if fileSize > fileSizeMidPoint {
+	if totalFileSize > fileSizeMidPoint {
 		partSize = bigChunk
 	}
-	numUploads := int(fileSize/partSize + 1)
+	numUploads := int(totalFileSize/partSize + 1)
 	poolSize := min(maxPoolSize, numUploads)
 	abort := func(errMsg string) {
 		log.Printf("%s, attempting to abort upload\n", errMsg)
@@ -108,7 +139,7 @@ func MultiPartCopy(ctx context.Context, svc *s3.Client, maxPoolSize int,
 	// Use a channel to distribute the part upload to a pool of workers
 	tasksCh := make(chan s3.UploadPartCopyInput, 1)
 	taskResultsCh := make(chan types.CompletedPart, 1)
-	errCh := make(chan error, 10)
+	errCh := make(chan error, 100)
 	done := make(chan struct{})
 	sendError := func(err error) {
 		if err == nil {
@@ -126,7 +157,7 @@ func MultiPartCopy(ctx context.Context, svc *s3.Client, maxPoolSize int,
 	// Set the the worker pool
 	go func() {
 		defer close(taskResultsCh)
-		log.Printf("Uploading %d parts using a pool size of %d to %s", numUploads, poolSize, destKey)
+		log.Printf("Uploading about %d parts using a pool size of %d to %s", numUploads, poolSize, destKey)
 		var wg sync.WaitGroup
 		for i := range poolSize {
 			wg.Add(1)
@@ -178,31 +209,84 @@ func MultiPartCopy(ctx context.Context, svc *s3.Client, maxPoolSize int,
 	}()
 
 	// Prepare a task for each part to upload/copy
-	numberOfParts := int(fileSize/partSize + 1)
 	go func() {
 		defer close(tasksCh)
 		var i int64
+		var partSize int64
 		var partNumber int32 = 1
-		// log.Printf("*** Preparing %d copy tasks", numberOfParts)
-		for i = 0; i < fileSize; i += partSize {
-			copyRange := buildCopySourceRange(i, partSize, fileSize)
-			partNum := partNumber
-			partInput := s3.UploadPartCopyInput{
-				Bucket:          &destBucket,
-				CopySource:      &copySource,
-				CopySourceRange: &copyRange,
-				Key:             &destKey,
-				PartNumber:      &partNum,
-				UploadId:        &uploadId,
+		var useRange bool
+		var partInput *s3.UploadPartCopyInput
+
+		for iobj := range s3Objects {
+			copySource := url.QueryEscape(fmt.Sprintf("%s/%s", srcBucket, s3Objects[iobj].Key))
+			fileSize := s3Objects[iobj].Size
+			if debug {
+				log.Printf("MultiPartCopy: Copy file %s of size %d\n", s3Objects[iobj].Key, s3Objects[iobj].Size)
 			}
-			// send the task to the worker pool
-			select {
-			case tasksCh <- partInput:
-			case <-done:
-				log.Println("sending tasks to pool worker interrupted")
-				return
+			switch {
+			case fileSize > fileSizeMidPoint:
+				n := fileSize / bigChunk
+				partSize = fileSize / n
+				useRange = true
+			case fileSize > fileSizeCutoff:
+				n := fileSize / smallChunk
+				partSize = fileSize / n
+				useRange = true
+			default:
+				useRange = false
 			}
-			partNumber++
+			if !useRange {
+				// Send the obj as a single chunk
+				partNum := partNumber
+				partInput = &s3.UploadPartCopyInput{
+					Bucket:     &destBucket,
+					CopySource: &copySource,
+					Key:        &destKey,
+					PartNumber: &partNum,
+					UploadId:   &uploadId,
+				}
+				if debug {
+					log.Printf("*** UploadPartCopyInput partnum: %d, copyrange: all, source %s\n",
+						partNum, s3Objects[iobj].Key)
+				}
+				// send the task to the worker pool
+				select {
+				case tasksCh <- *partInput:
+				case <-done:
+					log.Println("sending tasks to pool worker interrupted")
+					return
+				}
+				partNumber++
+			} else {
+				// Chunk the obj into partSize
+				for i = 0; i < s3Objects[iobj].Size; i += partSize {
+					isLastPart, copyRange := buildCopySourceRange(i, partSize, s3Objects[iobj].Size)
+					partNum := partNumber
+					partInput = &s3.UploadPartCopyInput{
+						Bucket:          &destBucket,
+						CopySource:      &copySource,
+						CopySourceRange: &copyRange,
+						Key:             &destKey,
+						PartNumber:      &partNum,
+						UploadId:        &uploadId,
+					}
+					// if debug {
+					// 	log.Printf("*** UploadPartCopyInput partnum: %d, copyrange: %s, source %s, isLastPart: %v\n",
+					// 		partNum, copyRange, s3Objects[iobj].Key, isLastPart)
+					// }
+					// send the task to the worker pool
+					select {
+					case tasksCh <- *partInput:
+					case <-done:
+						log.Println("sending tasks to pool worker interrupted")
+						return
+					}
+					partNumber++
+					if isLastPart {
+						break
+					}
+				}
+			}
 		}
 	}()
 
@@ -210,7 +294,7 @@ func MultiPartCopy(ctx context.Context, svc *s3.Client, maxPoolSize int,
 	go func() {
 		defer close(errCh)
 		// log.Println("*** Collecting tasks results")
-		parts := make([]types.CompletedPart, 0, numberOfParts)
+		parts := make([]types.CompletedPart, 0, int(totalFileSize/partSize+10))
 		for result := range taskResultsCh {
 			// log.Printf("***Got from taskResultsCh OK (copy part) for part %d", *result.PartNumber)
 			parts = append(parts, result)

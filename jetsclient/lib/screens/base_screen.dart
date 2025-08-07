@@ -280,6 +280,7 @@ class BaseScreenState extends State<BaseScreen> with TickerProviderStateMixin {
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(40.0, 0.0, 0.0, 0.0),
                         child: DropdownButtonFormField<String>(
+                            // initialValue: JetsRouterDelegate().selectedClient,
                             value: JetsRouterDelegate().selectedClient,
                             onChanged: (String? newValue) {
                               setState(() {

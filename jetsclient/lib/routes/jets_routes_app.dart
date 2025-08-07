@@ -51,6 +51,7 @@ const ufPipelineConfigPath = '/pipelineConfigUF';
 const ufLoadFilesPath = '/loadFilesUF';
 const ufRegisterFileKeyPath = '/registerFileKeyUF';
 const ufStartPipelinePath = '/startPipelineUF';
+const ufHomeFiltersPath = '/configureHomeFiltersUF';
 const ufPullWorkspacePath =
     '/pullWorkspaceUF/:key/:workspace_name/:workspace_branch/:feature_branch/:workspace_uri';
 const ufLoadConfigPath = '/workspaces/loadConfigUF/:workspace_name';
@@ -250,6 +251,12 @@ final Map<String, Widget> jetsRoutesMap = {
     screenPath: const JetsRouteData(ufStartPipelinePath),
     screenConfig: getScreenConfig(ScreenKeys.ufStartPipeline),
     userFlowConfig: getUserFlowConfig(UserFlowKeys.startPipelineUF),
+  ),
+  ufHomeFiltersPath: UserFlowScreen(
+    key: const Key(UserFlowKeys.homeFiltersUF),
+    screenPath: const JetsRouteData(ufHomeFiltersPath),
+    screenConfig: getScreenConfig(ScreenKeys.ufHomeFilters),
+    userFlowConfig: getUserFlowConfig(UserFlowKeys.homeFiltersUF),
   ),
   ufPullWorkspacePath: UserFlowScreen(
     key: const Key(UserFlowKeys.workspacePullUF),

@@ -16,7 +16,6 @@ import (
 	"github.com/artisoft-io/jetstore/jets/awsi"
 	"github.com/artisoft-io/jetstore/jets/datatable"
 	"github.com/artisoft-io/jetstore/jets/datatable/wsfile"
-	"github.com/artisoft-io/jetstore/jets/dbutils"
 	"github.com/artisoft-io/jetstore/jets/schema"
 	"github.com/artisoft-io/jetstore/jets/user"
 	"github.com/artisoft-io/jetstore/jets/workspace"
@@ -152,9 +151,9 @@ func (server *Server) checkJetStoreSchema() error {
 	return nil
 }
 
-// Update JetStore Db
+// Update JetStore Db -- Domain Tables and System Tables if needed
 // Precondition: db schema exist
-func (server *Server) checkJetStoreDbVersion() error {
+func (server *Server) checkDomainTablesVersion() error {
 	var serverArgs []string
 	var version sql.NullString
 	jetstoreVersion := os.Getenv("JETS_VERSION")
@@ -178,7 +177,7 @@ func (server *Server) checkJetStoreDbVersion() error {
 
 	case !version.Valid || jetstoreVersion > version.String:
 		log.Println("JetStore deployed version (in database) is", version.String)
-		log.Println("New JetStore Release deployed, running workspace db init script and migrating tables to latest schema")
+		log.Println("New JetStore Release deployed, update domain and suystem table and run workspace db init script")
 		serverArgs = []string{"-initBaseWorkspaceDb", "-migrateDb"}
 		if *usingSshTunnel {
 			serverArgs = append(serverArgs, "-usingSshTunnel")
@@ -326,7 +325,7 @@ func (server *Server) checkWorkspaceVersion() error {
 
 	case jetstoreVersion > version.String:
 		// Download overriten workspace files from database if any, skipping sqlite and tgz files since we will recompile workspace
-		if err = workspace.SyncWorkspaceFiles(server.dbpool, workspaceName, dbutils.FO_Open, "", true, true); err != nil {
+		if err = workspace.SyncWorkspaceFiles(server.dbpool, workspaceName, "", true, true); err != nil {
 			log.Println("Error (ignored) while synching workspace file from database:", err)
 		}
 		log.Println("Workspace deployed version (in database) is", version.String)
@@ -336,7 +335,7 @@ func (server *Server) checkWorkspaceVersion() error {
 	default:
 		log.Println("Workspace version in database", version, ">=", "JetStore image version", jetstoreVersion, ", no need to recompile workspace")
 		// Download overriten workspace files from database if any, not skipping sqlite/tgz files to get latest in case it was recompiled
-		if err = workspace.SyncWorkspaceFiles(server.dbpool, workspaceName, dbutils.FO_Open, "", false, false); err != nil {
+		if err = workspace.SyncWorkspaceFiles(server.dbpool, workspaceName, "", false, false); err != nil {
 			log.Println("Error (ignored) while synching workspace file from database:", err)
 		}
 		// NOT Recompiling workspace, hence return here
@@ -437,10 +436,10 @@ func listenAndServe() error {
 		return fmt.Errorf("while calling checkWorkspaceVersion: %v", err)
 	}
 
-	// Check jetstore version, run update_db if needed
-	err = server.checkJetStoreDbVersion()
+	// Check jetstore version, update domain tables and system if needed
+	err = server.checkDomainTablesVersion()
 	if err != nil {
-		return fmt.Errorf("while calling checkJetStoreDbVersion: %v", err)
+		return fmt.Errorf("while calling checkDomainTablesVersion: %v", err)
 	}
 
 	// Check that the users table and admin user exists

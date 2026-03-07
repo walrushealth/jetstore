@@ -3,9 +3,7 @@ package workspace
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -260,13 +258,8 @@ func CompileWorkspace(dbpool *pgxpool.Pool, workspaceName, version string) (stri
 		log.Println("Reading JetStore Model of", name, "from:", fpath)
 		file, err := os.ReadFile(fpath)
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				log.Printf("WARNING: Model not found: %s, skipping\n", fpath)
-				continue
-			} else {
-				err = fmt.Errorf("while reading json file (.model.json):%v", err)
-				return err.Error(), err
-			}
+			err = fmt.Errorf("while reading json file (.model.json):%v", err)
+			return err.Error(), err
 		}
 		model := rete.JetruleModel{}
 		err = json.Unmarshal(file, &model)

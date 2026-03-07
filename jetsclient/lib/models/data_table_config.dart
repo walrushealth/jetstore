@@ -1,6 +1,7 @@
 import 'package:jetsclient/components/data_table.dart';
 import 'package:jetsclient/models/data_table_model.dart';
 import 'package:jetsclient/components/jets_form_state.dart';
+import 'package:jetsclient/models/form_config.dart';
 import 'package:jetsclient/utils/constants.dart';
 
 typedef ModelHandler = Map<String, dynamic>? Function(JetsFormState formState);
@@ -24,6 +25,7 @@ class TableConfig {
     this.showSelectedOnly = false,
     required this.actions,
     this.secondRowActions = const [],
+    this.fromConfigRowActions = const [],
     required this.columns,
     this.defaultToAllRows = false,
     required this.fromClauses,
@@ -57,6 +59,7 @@ class TableConfig {
   final bool showSelectedOnly;
   final List<ActionConfig> actions;
   final List<ActionConfig> secondRowActions;
+  final List<ActionConfig> fromConfigRowActions;
   final List<ColumnConfig> columns;
   final bool defaultToAllRows;
   final RawQuery? sqlQuery;
@@ -87,6 +90,7 @@ enum DataTableActionType {
   toggleCopy2Clipboard,
   doActionShowDialog,
   clearHomeFilters,
+  setSessionIdFilter,
 }
 
 /// enum describing the condition when an action button is enabled based on
@@ -128,6 +132,8 @@ class ActionEnableCriteria {
   }
 }
 
+typedef IsEnabledFnc = bool Function(JetsDataTableState state);
+
 /// Table Action Configuration
 /// case isVisibleWhenCheckboxVisible is null, action always visible
 /// case isVisibleWhenCheckboxVisible == false, action visible when table check boxes are NOT visible
@@ -157,9 +163,11 @@ class ActionEnableCriteria {
 /// that the value are string corresponding to state form keys.
 /// Therefore the navigation params' values are resolved by looking up the value
 /// in the state form.
-/// (see data table state method [actionDispatcher])
-/// actionName is used for DataTableActionType.doAction, corresponding to the action
-/// to invoke when the ActionConfig button is pressed
+/// (see data table state method [actionDispatcher]).
+/// When [actionType] == [DataTableActionType.doAction] do one of:
+///   - invoke [actionDelegate] when defined, or
+///   - invoke [actionName] on the form's action delegate.
+/// This corresponds to the action to invoke when the [ActionConfig] button is pressed.
 class ActionConfig {
   ActionConfig(
       {required this.actionType,
@@ -169,12 +177,14 @@ class ActionConfig {
       this.isEnabledWhenHavingSelectedRows,
       this.isEnabledWhenWhereClauseSatisfied,
       this.isEnabledWhenStateHasKeys,
+      this.isEnabledFnc,
       this.navigationParams,
       this.stateFormNavigationParams,
       required this.style,
       this.configForm,
       this.configScreenPath,
       this.actionName,
+      this.actionDelegate,
       this.stateGroup = 0,
       this.actionEnableCriterias,
       this.capability});
@@ -191,9 +201,11 @@ class ActionConfig {
   final String? configForm;
   final String? configScreenPath;
   final String? actionName;
+  final FormActionsDelegate? actionDelegate;
   final int stateGroup;
   final List<List<ActionEnableCriteria>>? actionEnableCriterias;
   final String? capability;
+  final IsEnabledFnc? isEnabledFnc;
 
   /// returns true if action button is visible
   bool isVisible(JetsDataTableState widgetState) {
@@ -238,6 +250,9 @@ class ActionConfig {
     if (isEnabledWhenStateHasKeys != null) {
       return widgetState.dataSource
           .stateHasKeys(stateGroup, isEnabledWhenStateHasKeys!);
+    }
+    if (isEnabledFnc != null) {
+      return isEnabledFnc!(widgetState);
     }
     return true;
   }
@@ -355,7 +370,7 @@ class WhereClause {
     if (predicate != null) {
       result += ', predicate: $predicate';
     }
-    if(lookupColumnInFormState) {
+    if (lookupColumnInFormState) {
       result += ', lookupColumnInFormState: $lookupColumnInFormState';
     }
     if (like != null) {

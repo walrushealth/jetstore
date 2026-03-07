@@ -1,7 +1,11 @@
 package compute_pipes
 
 import (
+	"fmt"
+	"log"
 	"regexp"
+	"strconv"
+	"strings"
 )
 
 // This file contains the Compute Pipes configuration model
@@ -60,11 +64,12 @@ func (cp *ComputePipesConfig) GetComputePipes(stepId int, env map[string]any) ([
 					if err != nil {
 						return nil, 0, err
 					}
-					v, err := evaluator.eval(env)
+					v, err := evaluator.Eval(env)
 					if err != nil {
 						return nil, 0, err
 					}
 					if ToBool(v) {
+						ApplyConditionalEnvVars(cp.ConditionalPipesConfig[stepId].AddlEnv, env)
 						return cp.ConditionalPipesConfig[stepId].PipesConfig, stepId, nil
 					}
 					stepId += 1
@@ -73,13 +78,22 @@ func (cp *ComputePipesConfig) GetComputePipes(stepId int, env map[string]any) ([
 						return nil, stepId, nil
 					}
 				} else {
+					ApplyConditionalEnvVars(cp.ConditionalPipesConfig[stepId].AddlEnv, env)
 					return cp.ConditionalPipesConfig[stepId].PipesConfig, stepId, nil
 				}
 			}
 		}
+		ApplyConditionalEnvVars(cp.ConditionalPipesConfig[stepId].AddlEnv, env)
 		return cp.ConditionalPipesConfig[stepId].PipesConfig, stepId, nil
 	}
 	return nil, stepId, nil
+}
+
+func (cp *ComputePipesConfig) GetStepName(stepId int) string {
+	if len(cp.ConditionalPipesConfig) > stepId {
+		return cp.ConditionalPipesConfig[stepId].StepName
+	}
+	return ""
 }
 
 // Cluster configuration
@@ -137,6 +151,10 @@ func (cs *ClusterSpec) NbrPartitions(mode string) int {
 
 // Cluster sizing configuration
 // Allows to dynamically determine the NbrNodes based on total size of input files.
+// AppliesToFormat allows to specify the file format to which this spec applies,
+// e.g., parquet, csv, etc. When empty, applies to all formats.
+// WhenTotalSizeGe: Specify the condition for this to be applied in MB
+// (read as "when total size greater than or equal to").
 // When using ecs tasks, MaxConcurrency applies to ECS cluster,
 // otherwise MaxConcurrency is the number of concurrent lambda functions executing.
 // Note that S3WorkerPoolSize is used for reducing01, all other reducing steps use the
@@ -145,6 +163,7 @@ func (cs *ClusterSpec) NbrPartitions(mode string) int {
 // to shards.
 // When [MaxNbrPartitions] is not specified, the value at the ClusterSpec level is taken.
 type ClusterShardingSpec struct {
+	AppliesToFormat             string  `json:"applies_to_format,omitempty"`
 	WhenTotalSizeGe             int     `json:"when_total_size_ge_mb,omitzero"`
 	MaxNbrPartitions            int     `json:"max_nbr_partitions,omitzero"`
 	MultiStepShardingThresholds int     `json:"multi_step_sharding_thresholds,omitzero"`
@@ -220,6 +239,7 @@ type ChannelSpec struct {
 	ClassName            string          `json:"class_name,omitempty"`
 	DirectPropertiesOnly bool            `json:"direct_properties_only,omitzero"`
 	HasDynamicColumns    bool            `json:"has_dynamic_columns,omitzero"`
+	SameColumnsAsInput   bool            `json:"same_columns_as_input,omitzero"`
 	DomainKeys           map[string]any  `json:"domain_keys,omitempty"`
 	DomainKeysInfo       *DomainKeysSpec `json:"domain_keys_spec,omitzero"`
 	columnsMap           *map[string]int
@@ -236,36 +256,51 @@ type ContextSpec struct {
 // This is used by more specific types such as:
 // SchemaProviderSpec, InputChannelConfig, OutputChannelConfig, OutputFileSpec
 type FileConfig struct {
-	BadRowsConfig              *BadRowsSpec       `json:"bad_rows_config,omitzero"`
-	Bucket                     string             `json:"bucket,omitempty"`
-	Compression                string             `json:"compression,omitempty"`
-	Delimiter                  rune               `json:"delimiter,omitzero"`
-	DetectEncoding             bool               `json:"detect_encoding,omitzero"`
-	DetectCrAsEol              bool               `json:"detect_cr_as_eol,omitzero"`
-	DomainClass                string             `json:"domain_class,omitempty"`
-	DomainKeys                 map[string]any     `json:"domain_keys,omitempty"`
-	Encoding                   string             `json:"encoding,omitempty"`
-	EnforceRowMaxLength        bool               `json:"enforce_row_max_length,omitzero"`
-	EnforceRowMinLength        bool               `json:"enforce_row_min_length,omitzero"`
-	EolByte                    byte               `json:"eol_byte,omitzero"`
-	FileKey                    string             `json:"file_key,omitempty"`
-	FileName                   string             `json:"file_name,omitempty"` // Type output
-	FixedWidthColumnsCsv       string             `json:"fixed_width_columns_csv,omitempty"`
-	Format                     string             `json:"format,omitempty"`
-	InputFormatDataJson        string             `json:"input_format_data_json,omitempty"`
-	IsPartFiles                bool               `json:"is_part_files,omitzero"`
-	KeyPrefix                  string             `json:"key_prefix,omitempty"`
-	NbrRowsInRecord            int64              `json:"nbr_rows_in_record,omitzero"` // Format: parquet
-	NoQuotes                   bool               `json:"no_quotes,omitzero"`
-	ParquetSchema              *ParquetSchemaInfo `json:"parquet_schema,omitzero"`
-	PutHeadersOnFirstPartition bool               `json:"put_headers_on_first_partition,omitzero"`
-	QuoteAllRecords            bool               `json:"quote_all_records,omitzero"`
-	ReadBatchSize              int64              `json:"read_batch_size,omitzero"` // Format: parquet
-	ReadDateLayout             string             `json:"read_date_layout,omitempty"`
-	TrimColumns                bool               `json:"trim_columns,omitzero"`
-	UseLazyQuotes              bool               `json:"use_lazy_quotes,omitzero"`
-	VariableFieldsPerRecord    bool               `json:"variable_fields_per_record,omitzero"`
-	WriteDateLayout            string             `json:"write_date_layout,omitempty"`
+	BadRowsConfig              *BadRowsSpec           `json:"bad_rows_config,omitzero"`
+	BlankFieldMarkers          *BlankFieldMarkersSpec `json:"blank_field_markers,omitzero"`
+	Bucket                     string                 `json:"bucket,omitempty"`
+	Compression                string                 `json:"compression,omitempty"`
+	Delimiter                  rune                   `json:"delimiter,omitzero"`
+	DetectCrAsEol              bool                   `json:"detect_cr_as_eol,omitzero"`
+	DetectEncoding             bool                   `json:"detect_encoding,omitzero"`
+	DiscardFileHeaders         bool                   `json:"discard_file_headers,omitzero"`
+	DomainClass                string                 `json:"domain_class,omitempty"`
+	DomainKeys                 map[string]any         `json:"domain_keys,omitempty"`
+	DropExcedentHeaders        bool                   `json:"drop_excedent_headers,omitzero"`
+	Encoding                   string                 `json:"encoding,omitempty"`
+	EnforceRowMaxLength        bool                   `json:"enforce_row_max_length,omitzero"`
+	EnforceRowMinLength        bool                   `json:"enforce_row_min_length,omitzero"`
+	EolByte                    byte                   `json:"eol_byte,omitzero"`
+	FileKey                    string                 `json:"file_key,omitempty"`
+	LookbackPeriods            string                 `json:"lookback_periods,omitzero"`
+	FileName                   string                 `json:"file_name,omitempty"` // Type output
+	FixedWidthColumnsCsv       string                 `json:"fixed_width_columns_csv,omitempty"`
+	Format                     string                 `json:"format,omitempty"`
+	InputFormatDataJson        string                 `json:"input_format_data_json,omitempty"`
+	IsPartFiles                bool                   `json:"is_part_files,omitzero"`
+	KeyPrefix                  string                 `json:"key_prefix,omitempty"`
+	MainInputRowCount          int64                  `json:"main_input_row_count,omitzero"`
+	MultiColumnsInput          bool                   `json:"multi_columns_input,omitzero"`
+	NbrRowsInRecord            int64                  `json:"nbr_rows_in_record,omitzero"` // Format: parquet
+	NoQuotes                   bool                   `json:"no_quotes,omitzero"`
+	ParquetSchema              *ParquetSchemaInfo     `json:"parquet_schema,omitzero"`
+	PutHeadersOnFirstPartition bool                   `json:"put_headers_on_first_partition,omitzero"`
+	QuoteAllRecords            bool                   `json:"quote_all_records,omitzero"`
+	ReadBatchSize              int64                  `json:"read_batch_size,omitzero"` // Format: parquet
+	ReadDateLayout             string                 `json:"read_date_layout,omitempty"`
+	ReorderColumnsOnRead       []int                  `json:"reorder_columns_on_read,omitempty"`
+	TrimColumns                bool                   `json:"trim_columns,omitzero"`
+	UseLazyQuotes              bool                   `json:"use_lazy_quotes,omitzero"`
+	UseLazyQuotesSpecial       bool                   `json:"use_lazy_quotes_special,omitzero"`
+	VariableFieldsPerRecord    bool                   `json:"variable_fields_per_record,omitzero"`
+	WriteDateLayout            string                 `json:"write_date_layout,omitempty"`
+	OutputEncoding             string                 `json:"output_encoding,omitempty"`
+	OutputEncodingSameAsInput  bool                   `json:"output_encoding_same_as_input,omitempty"`
+}
+
+type BlankFieldMarkersSpec struct {
+	CaseSensitive bool     `json:"case_sensitive,omitzero"`
+	Markers       []string `json:"markers,omitempty"`
 }
 
 type SchemaProviderSpec struct {
@@ -273,27 +308,39 @@ type SchemaProviderSpec struct {
 	// Key is schema provider key for reference by compute pipes steps
 	// Format: csv, headerless_csv, fixed_width, parquet, parquet_select,
 	//              xlsx, headerless_xlsx
-	// Compression: none, snappy (parquet is always snappy)
-	// DetectEncoding: Detect file encoding (limited) for text file format
-	// DetectCrAsEol: Detect if \r is used as eol (format: csv,headerless_csv)
-	// EolByte: Byte to use as eol (format: csv,headerless_csv)
-	// ReadBatchSize: nbr of rows to read per record (format: parquet)
-	// NbrRowsInRecord: nbr of rows in record (format: parquet)
-	// InputFormatDataJson: json config based on Format (typically used for xlsx)
+	// Compression: none, snappy (parquet is always snappy).
+	// DetectEncoding: Detect file encoding (limited) for text file format.
+	// DetectCrAsEol: Detect if \r is used as eol (format: csv,headerless_csv).
+	// DiscardFileHeaders: when true, discard the headers from the input file (typically for csv format),
+	// this will force to use Headers or Columns from the configuration, or from the schema provider if Headers and Columns are not provided.
+	// EolByte: Byte to use as eol (format: csv,headerless_csv).
+	// MultiColumnsInput: Indicate that input file must have multiple columns,
+	// this is used to detect if the wrong delimiter is used (csv,headerless_csv).
+	// ReadBatchSize: nbr of rows to read per record (format: parquet).
+	// NbrRowsInRecord: nbr of rows in record (format: parquet).
+	// InputFormatDataJson: json config based on Format (typically used for xlsx).
 	// example: {"currentSheet": "Daily entry for Approvals"} (for xlsx).
-	// EnforceRowMinLength: when true, all columns must be in input record, otherwise missing columns are null
-	// EnforceRowMaxLength: when true, no extra characters must exist past last field (applies to text format)
+	// EnforceRowMinLength: when true, all columns must be in input record, otherwise missing columns are null.
+	// EnforceRowMaxLength: when true, no extra characters must exist past last field (applies to text format).
+	// Note EnforceRowMinLength and EnforceRowMaxLength apply to text format only (csv, headerless_csv, fixed_width).
+	// UseOriginSourceConfig: when true, use the source config from file_key components (client, org, object_type).
+	// Note origin session_id is from cpipes env $ORIGIN_SESSIONID
 	// BadRowsConfig: Specify how to handle bad rows when bot specified on InputChannelConfig.
 	// SourceType range: main_input, merged_input, historical_input (from input_source table)
 	// Columns: may be ommitted if fixed_width_columns_csv is provided or is a csv format
 	// Headers: alt to Columns, typically for csv format
-	// UseLazyQuotes, VariableFieldsPerRecord see csv.NewReader
-	// QuoteAllRecords will quote all records for csv writer
-	// NoQuotes will no quote any records for csv writer (even if the record contains '"')
+	// BlankFieldMarkers: specify markers for blank fields (any format, typically for csv format)
+	// GetPartitionsSize: when true, get the size of the partitions from s3
+	// CapDobYears: number of years to cap dob (date of birth) to today - for Anonymization.
+	// SetDodToJan1: set dod (date of death) to January 1st of the date year - for Anonymization.
+	// UseLazyQuotes, UseLazyQuotesSpecial, VariableFieldsPerRecord: see csv.NewReader.
+	// QuoteAllRecords will quote all records for csv writer.
+	// NoQuotes will no quote any records for csv writer (even if the record contains '"').
 	// Bucket and FileKey are location and source object (fileKey may be directory if IsPartFiles is true)
 	// KmsKey is kms key to use when writing output data. May be empty.
+	// RequestID is used for logging and tracking purpose.
 	// Contains properties to register FileKey with input_registry table:
-	// Client, Vendor, ObjectType, FileDate
+	// Client, Vendor, ObjectType, FileDate (does not apply to Jets_Loader).
 	// NotificationTemplatesOverrides have the following keys to override the templates defined
 	// in the deployment environment var: CPIPES_START_NOTIFICATION_JSON,
 	// CPIPES_COMPLETED_NOTIFICATION_JSON, and CPIPES_FAILED_NOTIFICATION_JSON.
@@ -307,11 +354,15 @@ type SchemaProviderSpec struct {
 	Client                           string             `json:"client,omitempty"`
 	Vendor                           string             `json:"vendor,omitempty"`
 	ObjectType                       string             `json:"object_type,omitempty"`
+	RequestID                        string             `json:"request_id,omitempty"`
+	UseOriginSourceConfig            bool               `json:"use_origin_source_config,omitempty"`
 	FileDate                         string             `json:"file_date,omitempty"`
 	SourceType                       string             `json:"source_type,omitempty"`
 	SchemaName                       string             `json:"schema_name,omitempty"`
 	Columns                          []SchemaColumnSpec `json:"columns,omitempty"`
 	Headers                          []string           `json:"headers,omitempty"`
+	CapDobYears                      int                `json:"cap_dob_years,omitzero"`
+	SetDodToJan1                     bool               `json:"set_dod_to_jan1,omitzero"`
 	Env                              map[string]any     `json:"env,omitempty"`
 	ReportCmds                       []ReportCmdSpec    `json:"report_cmds,omitempty"`
 	NotificationTemplatesOverrides   map[string]string  `json:"notification_templates_overrides,omitempty"`
@@ -320,9 +371,13 @@ type SchemaProviderSpec struct {
 
 // Commands for the run_report step
 // Type range: s3_copy_file
+// When is an optional expression to determine if the command
+// is to be executed.
+// S3CopyFileConfig provides the configuration for s3_copy_file command.
 type ReportCmdSpec struct {
 	Type             string          `json:"type"`
 	S3CopyFileConfig *S3CopyFileSpec `json:"s3_copy_file_config,omitzero"`
+	When             *ExpressionNode `json:"when,omitzero"`
 }
 
 // ReportCommand to copy file from s3 to s3
@@ -352,7 +407,8 @@ type TableSpec struct {
 }
 
 type OutputFileSpec struct {
-	// OutputLocation: jetstore_s3_input, jetstore_s3_output (default), or custom file key.
+	// OutputLocation: jetstore_s3_input, jetstore_s3_stage, jetstore_s3_output (default),
+	// or custom file key (the lasy option is depricated, use FileKey).
 	// When OutputLocation has a custom file key, it replace Name and KeyPrefix.
 	// Note: refactoring using FileConfig.FileKey is synonym to OutputLocation
 	// Note: refactoring using FileConfig.FileName is synonym to Name
@@ -364,11 +420,12 @@ type OutputFileSpec struct {
 	// The input channel's schema provider indicates what delimiter
 	// to use on the header line.
 	FileConfig
-	Key            string   `json:"key"`
-	FileName2      string   `json:"name,omitempty"`
-	FileKey2       string   `json:"output_location,omitempty"`
-	SchemaProvider string   `json:"schema_provider,omitempty"`
-	Headers        []string `json:"headers,omitempty"`
+	Key                string   `json:"key"`
+	FileName2          string   `json:"name,omitempty"`
+	FileKey2           string   `json:"output_location,omitempty"`
+	SchemaProvider     string   `json:"schema_provider,omitempty"`
+	UseOriginalHeaders bool     `json:"use_original_headers,omitzero"`
+	Headers            []string `json:"headers,omitempty"`
 }
 
 // Note: refactoring using FileConfig.FileKey is synonym to OutputLocation
@@ -401,29 +458,42 @@ type TableColumnSpec struct {
 
 type PipeSpec struct {
 	// Type range: fan_out, splitter, merge_files
-	Type           string               `json:"type"`
-	InputChannel   InputChannelConfig   `json:"input_channel"`
-	SplitterConfig *SplitterSpec        `json:"splitter_config,omitzero"`
-	Apply          []TransformationSpec `json:"apply"`
-	OutputFile     *string              `json:"output_file,omitzero"` // for merge_files
+	Type            string               `json:"type"`
+	InputChannel    InputChannelConfig   `json:"input_channel"`
+	SplitterConfig  *SplitterSpec        `json:"splitter_config,omitzero"`
+	MergeFileConfig *MergeFileSpec       `json:"merge_file_config,omitzero"`
+	Apply           []TransformationSpec `json:"apply"`
+	OutputFile      *string              `json:"output_file,omitzero"` // for merge_files
 }
 
-// ConditionalPipe: Each step are executed conditionally
-// When is nil, the step is always executed.
-// Available expr variables (see above):
+// MergeFileSpec configuration
+// FirstPartitionHasHeaders: when true, the first partitions has the headers
+// (considered for csv to determine if use s3 multipart copy).
+type MergeFileSpec struct {
+	FirstPartitionHasHeaders bool `json:"first_partition_has_headers,omitempty"` // splitter column
+}
+
+// ConditionalPipe: Each step are executed conditionally.
+// When the key "when" is nil, the step is always executed.
+// Available expr variables as main schema provider env var (see above):
 // multi_step_sharding as int, when > 0, nbr of shards is nbr_partition**2
 // total_file_size in bytes
 // nbr_partitions as int (used for hashing purpose)
 // use_ecs_tasks is true to use ecs fargate task
 // use_ecs_tasks_when is an expression as the when property.
 type ConditionalPipeSpec struct {
-	StepName        string          `json:"step_name,omitempty"`
-	UseEcsTasks     bool            `json:"use_ecs_tasks,omitzero"`
-	UseEcsTasksWhen *ExpressionNode `json:"use_ecs_tasks_when,omitzero"`
-	PipesConfig     []PipeSpec      `json:"pipes_config"`
-	When            *ExpressionNode `json:"when,omitzero"`
+	StepName        string                   `json:"step_name,omitempty"`
+	UseEcsTasks     bool                     `json:"use_ecs_tasks,omitzero"`
+	UseEcsTasksWhen *ExpressionNode          `json:"use_ecs_tasks_when,omitzero"`
+	PipesConfig     []PipeSpec               `json:"pipes_config"`
+	When            *ExpressionNode          `json:"when,omitzero"`
+	AddlEnv         []ConditionalEnvVariable `json:"addl_env,omitempty"`
 }
 
+type ConditionalEnvVariable struct {
+	CaseExpr []CaseExpression  `json:"case_expr,omitempty"` // case operator
+	ElseExpr []*ExpressionNode `json:"else_expr,omitempty"` // case operator
+}
 type SplitterSpec struct {
 	// Type range: standard (default), ext_count
 	// standard: split on Column / DefaultSplitterValue / ShardOn, create partition for each value
@@ -438,41 +508,91 @@ type SplitterSpec struct {
 
 type TransformationSpec struct {
 	// Type range: map_record, aggregate, analyze, high_freq, partition_writer,
-	//	anonymize, distinct, shuffling, group_by, filter, sort, jetrules, clustering
+	// anonymize, distinct, shuffling, group_by, filter, sort, merge, jetrules, clustering
 	// Format takes precedence over SchemaProvider's Format (from OutputChannelConfig)
-	Type                  string                     `json:"type"`
-	NewRecord             bool                       `json:"new_record,omitzero"`
-	Columns               []TransformationColumnSpec `json:"columns,omitempty"`
-	MapRecordConfig       *MapRecordSpec             `json:"map_record_config,omitzero"`
-	AnalyzeConfig         *AnalyzeSpec               `json:"analyze_config,omitzero"`
-	HighFreqColumns       []*HighFreqSpec            `json:"high_freq_columns,omitempty"` // Type high_freq
-	PartitionWriterConfig *PartitionWriterSpec       `json:"partition_writer_config,omitzero"`
-	AnonymizeConfig       *AnonymizeSpec             `json:"anonymize_config,omitzero"`
-	DistinctConfig        *DistinctSpec              `json:"distinct_config,omitzero"`
-	ShufflingConfig       *ShufflingSpec             `json:"shuffling_config,omitzero"`
-	GroupByConfig         *GroupBySpec               `json:"group_by_config,omitzero"`
-	FilterConfig          *FilterSpec                `json:"filter_config,omitzero"`
-	SortConfig            *SortSpec                  `json:"sort_config,omitzero"`
-	JetrulesConfig        *JetrulesSpec              `json:"jetrules_config,omitzero"`
-	ClusteringConfig      *ClusteringSpec            `json:"clustering_config,omitzero"`
-	OutputChannel         OutputChannelConfig        `json:"output_channel"`
+	Type                  string                           `json:"type"`
+	NewRecord             bool                             `json:"new_record,omitzero"`
+	Columns               []TransformationColumnSpec       `json:"columns,omitempty"`
+	MapRecordConfig       *MapRecordSpec                   `json:"map_record_config,omitzero"`
+	AnalyzeConfig         *AnalyzeSpec                     `json:"analyze_config,omitzero"`
+	HighFreqColumns       []*HighFreqSpec                  `json:"high_freq_columns,omitempty"` // Type high_freq
+	PartitionWriterConfig *PartitionWriterSpec             `json:"partition_writer_config,omitzero"`
+	AnonymizeConfig       *AnonymizeSpec                   `json:"anonymize_config,omitzero"`
+	DistinctConfig        *DistinctSpec                    `json:"distinct_config,omitzero"`
+	ShufflingConfig       *ShufflingSpec                   `json:"shuffling_config,omitzero"`
+	GroupByConfig         *GroupBySpec                     `json:"group_by_config,omitzero"`
+	FilterConfig          *FilterSpec                      `json:"filter_config,omitzero"`
+	SortConfig            *SortSpec                        `json:"sort_config,omitzero"`
+	JetrulesConfig        *JetrulesSpec                    `json:"jetrules_config,omitzero"`
+	ClusteringConfig      *ClusteringSpec                  `json:"clustering_config,omitzero"`
+	MergeConfig           *MergeSpec                       `json:"merge_config,omitzero"`
+	OutputChannel         OutputChannelConfig              `json:"output_channel"`
+	ConditionalConfig     []*ConditionalTransformationSpec `json:"conditional_config,omitzero"`
 }
 
+// This type is to provide conditional TransformationSpec
+// such that the host TransformationSpec has fields overriden
+// based on the condition.
+// When is the condition to evaluate, if true then apply the Then spec.
+// Note: when Then.Type is not empty, replace the host TransformationSpec altogether.
+type ConditionalTransformationSpec struct {
+	When ExpressionNode     `json:"when"`
+	Then TransformationSpec `json:"then"`
+}
+
+// MapRecordSpec configuration for map_record transformation
+// FileMappingTableName is the name of the file_mapping table to use for the mapping.
+// The file_mapping table specification is optional. When present, columns transformations
+// are created from the file_mapping table entries.
+// Note: When output_channel.class_name is provided, the first 3 columns of the output record
+// are `jets:key,rdf:type,jets:source_period_sequence` and if rdf:type is null after the mapping,
+// the default value specified by output_channel.class_name is used.
 type MapRecordSpec struct {
 	FileMappingTableName string `json:"file_mapping_table_name"`
+	IsDebug              bool   `json:"is_debug,omitzero"`
 }
 
+// AnalyzeSpec configuration
 // SchemaProvider is used for external configuration, such as date format
+// ScrubChars is the list of characters to scrub from the input values.
+// DistinctValuesWhenLessThanCount is the threshold to list distinct values.
+// PadShortRowsWithNulls indicates to pad short rows with nulls to match row length.
+// ColumnNameToken is used to classify columns based on their name.
+// EntityHints provide hints for entity recognition.
+// RegexTokens specify regex patterns to identify classification tokens.
+// LookupTokens specify lookup tables to identify classification tokens.
+// KeywordTokens specify keywords to identify classification tokens.
+// FunctionTokens specify functions to identify classification tokens.
 type AnalyzeSpec struct {
-	SchemaProvider                  string              `json:"schema_provider,omitempty"`
-	ScrubChars                      string              `json:"scrub_chars,omitempty"`
-	DistinctValuesWhenLessThanCount int                 `json:"distinct_values_when_less_than_count,omitzero"`
-	PadShortRowsWithNulls           bool                `json:"pad_short_rows_with_nulls,omitzero"`
-	EntityHints                     []*EntityHint       `json:"entity_hints,omitempty"`
-	RegexTokens                     []RegexNode         `json:"regex_tokens,omitempty"`
-	LookupTokens                    []LookupTokenNode   `json:"lookup_tokens,omitempty"`
-	KeywordTokens                   []KeywordTokenNode  `json:"keyword_tokens,omitempty"`
-	FunctionTokens                  []FunctionTokenNode `json:"function_tokens,omitempty"`
+	SchemaProvider                  string               `json:"schema_provider,omitempty"`
+	ScrubChars                      string               `json:"scrub_chars,omitempty"`
+	DistinctValuesWhenLessThanCount int                  `json:"distinct_values_when_less_than_count,omitzero"`
+	PadShortRowsWithNulls           bool                 `json:"pad_short_rows_with_nulls,omitzero"`
+	ColumnNameToken                 *ColumnNameTokenNode `json:"column_name_token,omitempty"`
+	EntityHints                     []*EntityHint        `json:"entity_hints,omitempty"`
+	RegexTokens                     []RegexNode          `json:"regex_tokens,omitempty"`
+	LookupTokens                    []LookupTokenNode    `json:"lookup_tokens,omitempty"`
+	KeywordTokens                   []KeywordTokenNode   `json:"keyword_tokens,omitempty"`
+	FunctionTokens                  []FunctionTokenNode  `json:"function_tokens,omitempty"`
+}
+
+// ColumnNameTokenNode specifies the classification by column name match
+// Name: correspond to the name of the output column where the classification
+// token is stored
+// Lookup: list of ColumnNameLookupNode to match the column names to the
+// classification token.
+type ColumnNameTokenNode struct {
+	Name   string                  `json:"name"`
+	Lookup []*ColumnNameLookupNode `json:"lookup,omitempty"`
+}
+
+// ColumnNameLookupNode specifies the column name to classification token
+// Name: classification token name
+// ColumnNames: list of column names that map to the classification token
+type ColumnNameLookupNode struct {
+	Name                string   `json:"name"`
+	ColumnNames         []string `json:"column_names,omitempty"`
+	ColumnNameFragments []string `json:"column_name_fragments,omitempty"`
 }
 
 // Defines the identification and handling of bad rows
@@ -492,22 +612,29 @@ type InputChannelConfig struct {
 	// Compression: none, snappy (parquet: always snappy)
 	// DetectEncoding: Detect file encoding (limited) for text file format
 	// DetectCrAsEol: Detect if \r is used as eol (format: csv,headerless_csv)
+	// DiscardFileHeaders: when true, discard the headers from the input file (typically for csv format).
 	// EolByte: Byte to use as eol (format: csv,headerless_csv)
+	// MultiColumnsInput: Indicate that input file must have multiple columns,
+	// this is used to detect if the wrong delimiter is used (csv,headerless_csv)
 	// Note: SchemaProvider, Compression, Format for Type input are provided via
 	// ComputePipesCommonArgs.SourcesConfig (ie input_registry table).
 	// BadRowsConfig: Specify how to handle bad rows.
 	// HasGroupedRows indicates that the channel contains grouped rows,
-	// most likely from the group_by operator.
+	// most likely from the group_by or merge operator.
 	// Note: The input_row channel (main input) will be cast to the
 	// rdf type specified by the domain class of the main input source.
 	FileConfig
-	Type             string `json:"type"`
-	Name             string `json:"name"`
-	SchemaProvider   string `json:"schema_provider,omitempty"`
-	ReadStepId       string `json:"read_step_id,omitempty"`
-	SamplingRate     int    `json:"sampling_rate,omitzero"`
-	SamplingMaxCount int    `json:"sampling_max_count,omitzero"`
-	HasGroupedRows   bool   `json:"has_grouped_rows,omitzero"`
+	Type                 string               `json:"type"`
+	Name                 string               `json:"name"`
+	SchemaProvider       string               `json:"schema_provider,omitempty"`
+	ReadSessionId        string               `json:"read_session_id,omitempty"`
+	ReadStepId           string               `json:"read_step_id,omitempty"`
+	ReadPartitionId      string               `json:"read_partition_id,omitempty"`
+	SamplingRate         int                  `json:"sampling_rate,omitzero"`
+	SamplingMaxCount     int                  `json:"sampling_max_count,omitzero"`
+	HasGroupedRows       bool                 `json:"has_grouped_rows,omitzero"`
+	MergeChannels        []InputChannelConfig `json:"merge_channels,omitempty"`
+	schemaProviderConfig *SchemaProviderSpec
 }
 
 type OutputChannelConfig struct {
@@ -516,11 +643,13 @@ type OutputChannelConfig struct {
 	// NbrRowsInRecord: nbr of rows in record (format: parquet)
 	// Compression: none, snappy (default).
 	// UseInputParquetSchema to use the same schema as the input file.
+	// UseOriginalHeaders to use the headers from the input file (csv only).
 	// Must have save_parquet_schema = true in the cpipes first input_channel.
 	// OutputLocation: jetstore_s3_input, jetstore_s3_output (default), or custom location.
 	// When OutputLocation is jetstore_s3_input it will also write to the input bucket.
 	// When OutputLocation uses a custom location, it replaces KeyPrefix and FileName.
-	// OutputLocation must ends with "/" if we want to use default file name.
+	// OutputLocation must ends with "/" if we want to use default file name
+	// (i.e. OutputLocation does not include the file name).
 	// Note: refactoring using FileConfig.FileKey is synonym to OutputLocation
 	// KeyPrefix is optional, default to $PATH_FILE_KEY.
 	// Use $CURRENT_PARTITION_LABEL in KeyPrefix and FileName to substitute with
@@ -536,6 +665,7 @@ type OutputChannelConfig struct {
 	FileConfig
 	Type                  string `json:"type"`
 	Name                  string `json:"name,omitempty"`
+	UseOriginalHeaders    bool   `json:"use_original_headers,omitzero"`     // Type output
 	UseInputParquetSchema bool   `json:"use_input_parquet_schema,omitzero"` // Type stage,output
 	SchemaProvider        string `json:"schema_provider,omitempty"`         // Type stage,output, alt to Format
 	WriteStepId           string `json:"write_step_id,omitempty"`           // Type stage
@@ -610,10 +740,32 @@ type KeywordTokenNode struct {
 // ParseDateArguments: for Type: parse_date
 // Large_Double: for Type: parse_double
 type FunctionTokenNode struct {
-	Type               string            `json:"type"`
-	MinMaxDateFormat   string            `json:"minmax_date_format,omitempty"`
-	ParseDateArguments []ParseDateFTSpec `json:"parse_date_args,omitempty"`
-	LargeDouble        *float64          `json:"large_double,omitzero"`
+	Type            string         `json:"type"`
+	ParseDateConfig *ParseDateSpec `json:"parse_date_config,omitzero"`
+	LargeDouble     *float64       `json:"large_double,omitzero"`
+}
+
+// DateFormatToken: output column name for listing up to 3 formats used in file.
+// OtherDateFormatToken: output column name to put the count of other format used in file.
+// DateSamplingMaxCount: nbr of samples to use for determining the date format.
+// DateFormats: list of date formats to use for parsing the date.
+// OtherDateFormats: list of other date formats to use for parsing the date
+// when DateFormatToken does not match (which are undesirable formats).
+// MinMaxDateFormat: format used in output report for min/max dates.
+// ParseDateArguments: list of parse date function token spec.
+// UseJetstoreParser: when true it will use only the jetstore date parser.
+// Identify top date format matches, up to 3. The first match must account
+// for 75% of total date matches.
+// Identify other date matches, each must match 98% of total date matches.
+type ParseDateSpec struct {
+	DateFormatToken      string            `json:"date_format_token,omitempty"`
+	OtherDateFormatToken string            `json:"other_date_format_token,omitempty"`
+	DateSamplingMaxCount int               `json:"sampling_max_count,omitzero"`
+	DateFormats          []string          `json:"date_formats,omitempty"`
+	OtherDateFormats     []string          `json:"other_date_formats,omitempty"`
+	MinMaxDateFormat     string            `json:"minmax_date_format,omitempty"`
+	ParseDateArguments   []ParseDateFTSpec `json:"parse_date_args,omitempty"`
+	UseJetstoreParser    bool              `json:"use_jetstore_date_parser,omitzero"`
 }
 
 // The date format is using a reference date of
@@ -625,12 +777,9 @@ type FunctionTokenNode struct {
 // year_less_than and year_greater_than is an additional condition
 // to the match result.
 type ParseDateFTSpec struct {
-	Token             string `json:"token"`
-	DefaultDateFormat string `json:"default_date_format,omitempty"`
-	DateFormat        string `json:"date_format,omitempty"`
-	UseJetstoreParser bool   `json:"use_jetstore_date_parser,omitzero"`
-	YearLessThan      int    `json:"year_less_than,omitzero"`
-	YearGreaterThan   int    `json:"year_greater_than,omitzero"`
+	Token           string `json:"token"`
+	YearLessThan    int    `json:"year_less_than,omitzero"`
+	YearGreaterThan int    `json:"year_greater_than,omitzero"`
 }
 
 // top_pct correspond the top percentile of the data,
@@ -670,12 +819,31 @@ type PartitionWriterSpec struct {
 	StreamDataOut    bool    `json:"stream_data_out,omitzero"`
 }
 
-// LookupName is name of lookup table containing the file metadata from analyze operator
-// AnonymizeType is column name in lookup table that specifiy how to anonymize (value: date, text)
-// KeyPrefix is column name of lookup table to use as prefix of the anonymized value
-// InputDateLayout is the format for parsing the input date (incoming data)
-// OutputDateLayout is the format to use for anonymized date, will be set at 1st of the month of the original date
-// KeyDateLayout is the format to use in the key mapping file (crosswalk file)
+type ColumnFileSpec struct {
+	// OutputLocation: custom file key.
+	// Bucket is bucket or empty for jetstore one.
+	// Delimiter: rune delimiter to use for output file.
+	Bucket         string `json:"bucket,omitempty"`
+	OutputLocation string `json:"output_location,omitempty"`
+	SchemaProvider string `json:"schema_provider,omitempty"`
+	Delimiter      rune   `json:"delimiter,omitzero"`
+}
+
+// Mode: Specify mode of action: de-identification, anonymization (default)
+// - de-identification: mask the data (not reversible);
+// - anonymization: replace the data with hashed value (reversible using crosswalk file).
+// LookupName is name of lookup table containing the file metadata from analyze operator.
+// AnonymizeType is column name in lookup table that specifiy how to anonymize (value: date, text).
+// KeyPrefix is column name of lookup table to use as prefix of the anonymized value or
+// key mapping  for de-identification lookup table.
+// DeidFunctions is map of KeyPrefix value to function name for de-identification.
+// DeidLookups is map of KeyPrefix value to lookup table name for substitution values
+// for de-identification.
+// InputDateLayout is the format for parsing the input date (incoming data) when specified.
+// DateFormatsColumn is column name of the lookup table having the list of date format (optional).
+// OutputDateLayout is the format to use for anonymized date, will be set at 1st of the month of
+// the original date (anonymization) or to XXX when de-identification.
+// KeyDateLayout is the format to use in the key mapping file (crosswalk file) for anonymization.
 // DefaultInvalidDate is a placeholder to use as the anonymized date when the input date
 // (the date to anonymize) is not valid. If unspecified, the input value is used unchanged
 // as the output value.
@@ -684,21 +852,28 @@ type PartitionWriterSpec struct {
 // according to KeyDateLayout.
 // OutputDateLayout defaults to InputDateLayout.
 // KeyDateLayout defaults to OutputDateLayout.
-// SchemaProvider is used to get the DateLayout / KeyDateLayout if not specified here.
+// SchemaProvider is used to:
+// - get the DateLayout / KeyDateLayout if not specified here.
+// - get CapDobYears / SetDodToJan1 for date anonymization.
 // If date format is not specified, the default format for both OutputDateFormat and KeyDateFormat
 // is "2006/01/02", ie. yyyy/MM/dd and the rdf.ParseDate() is used to parse the input date.
 type AnonymizeSpec struct {
-	LookupName           string              `json:"lookup_name,omitempty"`
-	AnonymizeType        string              `json:"anonymize_type,omitempty"`
-	KeyPrefix            string              `json:"key_prefix,omitempty"`
-	InputDateLayout      string              `json:"input_date_layout,omitempty"`
-	OutputDateLayout     string              `json:"output_date_layout,omitempty"`
-	KeyDateLayout        string              `json:"key_date_layout,omitempty"`
-	DefaultInvalidDate   string              `json:"default_invalid_date,omitempty"`
-	SchemaProvider       string              `json:"schema_provider,omitempty"`
-	AdjustFieldWidthOnFW bool                `json:"adjust_field_width_on_fixed_width_file,omitzero"`
-	OmitPrefixOnFW       bool                `json:"omit_prefix_on_fixed_width_file,omitzero"`
-	KeysOutputChannel    OutputChannelConfig `json:"keys_output_channel"`
+	Mode                        string               `json:"mode,omitempty"`
+	LookupName                  string               `json:"lookup_name,omitempty"`
+	AnonymizeType               string               `json:"anonymize_type,omitempty"`
+	KeyPrefix                   string               `json:"key_prefix,omitempty"`
+	DeidFunctions               map[string]string    `json:"deid_functions,omitempty"`
+	DeidLookups                 map[string]string    `json:"deid_lookups,omitempty"`
+	InputDateLayout             string               `json:"input_date_layout,omitempty"`
+	DateFormatsColumn           string               `json:"date_formats_column,omitempty"`
+	OutputDateLayout            string               `json:"output_date_layout,omitempty"`
+	KeyDateLayout               string               `json:"key_date_layout,omitempty"`
+	DefaultInvalidDate          string               `json:"default_invalid_date,omitempty"`
+	SchemaProvider              string               `json:"schema_provider,omitempty"`
+	AdjustFieldWidthOnFW        bool                 `json:"adjust_field_width_on_fixed_width_file,omitzero"`
+	OmitPrefixOnFW              bool                 `json:"omit_prefix_on_fixed_width_file,omitzero"`
+	AnonymizedColumnsOutputFile *ColumnFileSpec      `json:"anonymized_columns_output_file,omitzero"`
+	KeysOutputChannel           *OutputChannelConfig `json:"keys_output_channel"`
 }
 
 type DistinctSpec struct {
@@ -712,8 +887,14 @@ type ShufflingSpec struct {
 	FilterColumns         *FilterColumnSpec `json:"filter_columns,omitzero"`
 }
 
+// FilterColumnSpec specify how to filter the input rows before shuffling
+// LookupName is the name of the lookup table containing the column metadata, produced by the analyze operator.
+// ColumnName is the name of the column of the lookup table containing the column name to use on the output rows.
+// LookupColumn is the name of the column in the lookup table containing column name of the metadata table to filter on.
+// RetainOnValues is the list of values in the lookup table for LookupColumn to retain, only rows with thosae values are retained.
 type FilterColumnSpec struct {
 	LookupName     string   `json:"lookup_name,omitempty"`
+	ColumnName     string   `json:"column_name,omitempty"`
 	LookupColumn   string   `json:"lookup_column,omitempty"`
 	RetainOnValues []string `json:"retain_on_values,omitempty"`
 }
@@ -728,12 +909,25 @@ type GroupBySpec struct {
 	GroupByPos   []int    `json:"group_by_pos,omitempty"`
 	GroupByCount int      `json:"group_by_count,omitzero"`
 	DomainKey    string   `json:"domain_key,omitempty"`
+	IsDebug      bool     `json:"is_debug,omitzero"`
 }
 
-// Filter row base on a when criteria
+type MergeSpec struct {
+	IsDebug      bool           `json:"is_debug,omitzero"`
+	MainGroupBy  GroupBySpec    `json:"main_group_by"`
+	MergeGroupBy []*GroupBySpec `json:"merge_group_by,omitempty"`
+}
+
+// Filter row base on:
+//   - when criteria, if provided,
+//   - max output count, if provided.
+//
+// RowLengthStrict: when true, will enforce that input row length
+// matches the schema length, otherwise they are filtered.
 type FilterSpec struct {
-	When           ExpressionNode `json:"when"`
-	MaxOutputCount int            `json:"max_output_records,omitzero"`
+	RowLengthStrict bool            `json:"row_length_strict,omitzero"`
+	When            *ExpressionNode `json:"when,omitzero"`
+	MaxOutputCount  int             `json:"max_output_records,omitzero"`
 }
 
 // Sort using composite key
@@ -742,11 +936,34 @@ type FilterSpec struct {
 type SortSpec struct {
 	DomainKey    string   `json:"domain_key,omitempty"`
 	SortByColumn []string `json:"sort_by,omitempty"`
+	IsDebug      bool     `json:"is_debug,omitzero"`
 }
 
-// MaxLooping overrides the value in the jetrules metastore
+// JetrulesSpec configuration
+// ProcessName is the jetrules process name to use.
+// UseJetRulesNative when true use the jetrules native engine.
+// UseJetRulesGo when true use the jetrules go engine.
+// Note: only one of UseJetRulesNative or UseJetRulesGo can be true.
+// When both are false, the default is to use the jetrules native engine when
+// available.
+// InputRdfType is the rdf type (class name) of the input records.
+// MaxInputCount is the max nbr of input records to process.
+// PoolSize is the nbr of worker pool size.
+// MaxReteSessionsSaved is the max nbr of rete sessions to save in err table.
+// CurrentSourcePeriod is the source period key to use for this process.
+// CurrentSourcePeriodDate is the source period date  (aka file period date)
+// to use this process.
+// CurrentSourcePeriodType is the source period type (day, week or, month)
+// to use for this process.
+// RuleConfig provide additional configuration for jetrules processing.
+// MetadataInputSources provide the list of csv sources to load as metadata
+// input sources for jetrules processing.
+// IsDebug when true enable debug mode for jetrules processing.
+// MaxLooping overrides the value in the jetrules metastore.
 type JetrulesSpec struct {
 	ProcessName             string                `json:"process_name,omitempty"`
+	UseJetRulesNative       bool                  `json:"use_jet_rules_native,omitzero"`
+	UseJetRulesGo           bool                  `json:"use_jet_rules_go,omitzero"`
 	InputRdfType            string                `json:"input_rdf_type,omitempty"`
 	MaxInputCount           int                   `json:"max_input_count,omitzero"`
 	PoolSize                int                   `json:"pool_size,omitzero"`
@@ -832,11 +1049,61 @@ type HashExpression struct {
 	Expr                   string   `json:"expr,omitempty"`
 	CompositeExpr          []string `json:"composite_expr,omitempty"`
 	DomainKey              string   `json:"domain_key,omitempty"`
-	NbrJetsPartitions      *uint64  `json:"nbr_jets_partitions,omitzero"`
+	NbrJetsPartitionsAny   any      `json:"nbr_jets_partitions,omitzero"`
 	MultiStepShardingMode  string   `json:"multi_step_sharding_mode,omitempty"`
 	AlternateCompositeExpr []string `json:"alternate_composite_expr,omitempty"`
 	NoPartitions           bool     `json:"no_partitions,omitzero"`
 	ComputeDomainKey       bool     `json:"compute_domain_key,omitzero"`
+}
+
+func (h *HashExpression) String() string {
+	var b strings.Builder
+	b.WriteString("HashExpression(")
+	if h.Expr != "" {
+		fmt.Fprintf(&b, "Expr: %s, ", h.Expr)
+	}
+	if len(h.CompositeExpr) > 0 {
+		fmt.Fprintf(&b, "CompositeExpr: %v, ", h.CompositeExpr)
+	}
+	if h.DomainKey != "" {
+		fmt.Fprintf(&b, "DomainKey: %s, ", h.DomainKey)
+	}
+	if h.MultiStepShardingMode != "" {
+		fmt.Fprintf(&b, "MultiStepShardingMode: %s, ", h.MultiStepShardingMode)
+	}
+	if len(h.AlternateCompositeExpr) > 0 {
+		fmt.Fprintf(&b, "AlternateCompositeExpr: %v, ", h.AlternateCompositeExpr)
+	}
+	if h.NoPartitions {
+		b.WriteString("NoPartitions: true, ")
+	}
+	if h.ComputeDomainKey {
+		b.WriteString("ComputeDomainKey: true")
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+func (h *HashExpression) NbrJetsPartitions() uint64 {
+	switch v := h.NbrJetsPartitionsAny.(type) {
+	case uint64:
+		return v
+	case int:
+		return uint64(v)
+	case int64:
+		return uint64(v)
+	case float64:
+		return uint64(v)
+	case string:
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			log.Printf("Warning: Invalid nbr_jets_partitions value '%s', defaulting to 0", v)
+			return 0
+		}
+		return n
+	default:
+		return 0
+	}
 }
 
 type MapExpression struct {

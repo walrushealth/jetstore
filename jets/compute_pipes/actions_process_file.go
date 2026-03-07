@@ -11,8 +11,7 @@ import (
 
 // From loader's processFileAndReportStatus
 
-func (cpCtx *ComputePipesContext) ProcessFilesAndReportStatus(ctx context.Context, dbpool *pgxpool.Pool,
-	inFolderPath string) error {
+func (cpCtx *ComputePipesContext) ProcessFilesAndReportStatus(ctx context.Context, dbpool *pgxpool.Pool) error {
 
 	cpCtx.ChResults = &ChannelResults{
 		// NOTE 2025/06/29: Removing unneccessary limits, otherwise this will hang when collecting results
@@ -106,7 +105,14 @@ func (cpCtx *ComputePipesContext) ProcessFilesAndReportStatus(ctx context.Contex
 			}
 		}
 	}
-	
+	if loadedRowCount == 0 && badRowCount > 0 {
+		loadErr := fmt.Errorf("error: node %d loaded no valid rows and got %d bad rows",
+			cpCtx.NodeId, badRowCount)
+		processingErrors = append(processingErrors, loadErr.Error())
+		if err == nil {
+			err = loadErr
+		}
+	}
 	if cpCtx.CpConfig.ClusterConfig.IsDebugMode {
 		log.Println("**@= CHECKING jetrules results from JetrulesWorkerResultCh:")
 	}
@@ -231,10 +237,10 @@ func (cpCtx *ComputePipesContext) ProcessFilesAndReportStatus(ctx context.Contex
 	// registering the load
 	// ---------------------------------------
 	var status string
-	switch {
-	case err == nil:
+	switch err {
+	case nil:
 		status = "completed"
-	case err == ErrKillSwitch:
+	case ErrKillSwitch:
 		status = "interrupted"
 	default:
 		status = "failed"
@@ -266,7 +272,7 @@ func (cpCtx *ComputePipesContext) InsertPipelineExecutionStatus(dbpool *pgxpool.
 							RETURNING key`
 	var key int
 	err := dbpool.QueryRow(context.Background(), stmt,
-		cpCtx.PipelineConfigKey, cpCtx.PipelineExecKey, cpCtx.Client, cpCtx.ProcessName, 
+		cpCtx.PipelineConfigKey, cpCtx.PipelineExecKey, cpCtx.Client, cpCtx.ProcessName,
 		cpCtx.InputSessionId, cpCtx.SessionId, cpCtx.SourcePeriodKey,
 		cpCtx.NodeId, cpCtx.JetsPartitionLabel, cpCtx.UserEmail).Scan(&key)
 	if err != nil {
@@ -275,16 +281,16 @@ func (cpCtx *ComputePipesContext) InsertPipelineExecutionStatus(dbpool *pgxpool.
 	return key, nil
 }
 func (cpCtx *ComputePipesContext) UpdatePipelineExecutionStatus(
-	dbpool *pgxpool.Pool, key int, 
+	dbpool *pgxpool.Pool, key int,
 	inputRowCount, badRowCount, totalFilesSizeMb, inputFilesCount, reteSessionCount, outputRowCount int,
 	cpipesStepId, status, errMessage string) error {
 	// log.Printf("Updating status '%s' to pipeline_execution_details table", status)
 	stmt := `UPDATE jetsapi.pipeline_execution_details SET (
 							cpipes_step_id, status, error_message, input_records_count, input_bad_records_count,
-							input_files_size_mb, input_files_count, rete_sessions_count, output_records_count) 
-							= ($1, $2, $3, $4, $5, $6, $7, $8, $9) WHERE key = $10`
+							input_files_size_mb, input_files_count, rete_sessions_count, output_records_count, last_update) 
+							= ($1, $2, $3, $4, $5, $6, $7, $8, $9, DEFAULT) WHERE key = $10`
 	_, err := dbpool.Exec(context.Background(), stmt,
-		cpipesStepId, status, errMessage, inputRowCount, badRowCount, totalFilesSizeMb, inputFilesCount, 
+		cpipesStepId, status, errMessage, inputRowCount, badRowCount, totalFilesSizeMb, inputFilesCount,
 		reteSessionCount, outputRowCount, key)
 	if err != nil {
 		return fmt.Errorf("error updating in jetsapi.pipeline_execution_details table: %v", err)

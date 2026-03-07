@@ -19,15 +19,16 @@ import (
 // This is all done synchronously.
 
 type FetchFileInfoResult struct {
-	headers  []string
-	sepFlag  jcsv.Chartype
-	encoding string
-	eolByte  byte
+	Headers      []string
+	SepFlag      jcsv.Chartype
+	Encoding     string
+	EolByte      byte
+	MultiColumns bool
 }
 
 // Main function
 func FetchHeadersAndDelimiterFromFile(externalBucket, fileKey, fileFormat, compression, encoding string, delimitor rune,
-	fetchHeaders, fetchDelimitor, fetchEncoding, detectCrAsEol bool, fileFormatDataJson string) (*FetchFileInfoResult, error) {
+	multiColumnsInput, noQuotes, fetchHeaders, fetchDelimitor, fetchEncoding, detectCrAsEol bool, fileFormatDataJson string) (*FetchFileInfoResult, error) {
 	var fileHd *os.File
 	var err error
 	var sepFlag jcsv.Chartype
@@ -37,8 +38,9 @@ func FetchHeadersAndDelimiterFromFile(externalBucket, fileKey, fileFormat, compr
 		sepFlag = jcsv.Chartype(delimitor)
 	}
 	fileInfo := &FetchFileInfoResult{
-		encoding: encoding,
-		sepFlag:  sepFlag,
+		Encoding:     encoding,
+		SepFlag:      sepFlag,
+		MultiColumns: multiColumnsInput,
 	}
 	fileHd, err = os.CreateTemp("", "jetstore_headers")
 	if err != nil {
@@ -81,18 +83,18 @@ do_retry:
 	case strings.HasSuffix(fileFormat, "csv"):
 		if fetchDelimitor {
 			// determine the csv separator
-			fileInfo.sepFlag, err = DetectCsvDelimitor(fileHd, compression)
+			fileInfo.SepFlag, err = DetectCsvDelimitor(fileHd, compression)
 			if err != nil {
 				return nil, err
 			}
-			log.Println("Detected sep_flag:", fileInfo.sepFlag)
+			log.Println("Detected sep_flag:", fileInfo.SepFlag)
 		}
 		if fetchEncoding {
-			fileInfo.encoding, err = DetectFileEncoding(fileHd)
+			fileInfo.Encoding, err = DetectFileEncoding(fileHd, rune(fileInfo.SepFlag))
 			if err != nil {
 				return nil, err
 			}
-			log.Println("Detected encoding:", fileInfo.encoding)
+			log.Println("Detected encoding:", fileInfo.Encoding)
 		}
 		if detectCrAsEol {
 			b, err := DetectCrAsEol(fileHd, compression)
@@ -101,19 +103,19 @@ do_retry:
 			}
 			if b {
 				log.Println("Warning: the file does not contains \\n, using \\r as eol")
-				fileInfo.eolByte = '\r'
+				fileInfo.EolByte = '\r'
 			}
 		}
 		if fetchHeaders {
-			fileInfo.headers, err = GetRawHeadersCsv(fileHd, fileKey, fileFormat,
-				compression, fileInfo.sepFlag, fileInfo.encoding, fileInfo.eolByte)
+			fileInfo.Headers, err = GetRawHeadersCsv(fileHd, fileKey, fileFormat,
+				compression, fileInfo.SepFlag, fileInfo.Encoding, fileInfo.EolByte, fileInfo.MultiColumns, noQuotes)
 		}
 		return fileInfo, err
 
 	case fileFormat == "parquet":
 		if fetchHeaders {
 			// Get the file headers from the parquet schema
-			fileInfo.headers, err = GetRawHeadersParquet(fileHd, fileKey)
+			fileInfo.Headers, err = GetRawHeadersParquet(fileHd, fileKey)
 			return fileInfo, err
 		} else {
 			return nil,
@@ -123,11 +125,11 @@ do_retry:
 
 	case fileFormat == "fixed_width":
 		if fetchEncoding {
-			fileInfo.encoding, err = DetectFileEncoding(fileHd)
+			fileInfo.Encoding, err = DetectFileEncoding(fileHd, 0)
 			if err != nil {
 				return nil, err
 			}
-			log.Println("Detected encoding:", fileInfo.encoding)
+			log.Println("Detected encoding:", fileInfo.Encoding)
 			return fileInfo, err
 		} else {
 			return nil,
@@ -140,7 +142,7 @@ do_retry:
 			fileName := fileHd.Name()
 			fileHd.Close()
 			fileHd = nil
-			fileInfo.headers, err = GetRawHeadersXlsx(fileName, fileFormatDataJson)
+			fileInfo.Headers, err = GetRawHeadersXlsx(fileName, fileFormatDataJson)
 			os.Remove(fileName)
 			return fileInfo, err
 		} else {
@@ -156,7 +158,7 @@ do_retry:
 // Get the raw headers from fileHd, put them in *ic
 // Use *sepFlag as the csv delimiter
 func GetRawHeadersCsv(fileHd *os.File, fileName, fileFormat, compression string, sepFlag jcsv.Chartype,
-	encoding string, eolByte byte) ([]string, error) {
+	encoding string, eolByte byte, multiColumns, noQuotes bool) ([]string, error) {
 	var err error
 	utfReader, err := WrapReaderWithDecoder(WrapReaderWithDecompressor(fileHd, compression), encoding)
 	if err != nil {
@@ -170,6 +172,11 @@ func GetRawHeadersCsv(fileHd *os.File, fileName, fileFormat, compression string,
 	if eolByte > 0 {
 		csvReader.EolByte = eolByte
 	}
+	if noQuotes {
+		csvReader.NoQuotes = true
+	} else {
+		csvReader.LazyQuotesSpecial = true
+	}
 
 	// Read the file headers
 	ic, err := csvReader.Read()
@@ -178,6 +185,12 @@ func GetRawHeadersCsv(fileHd *os.File, fileName, fileFormat, compression string,
 		return nil, errors.New("input csv file is empty (GetRawHeadersCsv)")
 	} else if err != nil {
 		err = fmt.Errorf("while reading csv headers (GetRawHeadersCsv): %v", err)
+		b, _ := json.Marshal(string(csvReader.LastRawRecord()))
+		log.Printf("%v: raw record as json string:\n%s", err, string(b))
+		return nil, err
+	}
+	if multiColumns && len(ic) < 2 {
+		err = fmt.Errorf("error: delimiter '%s' is not the delimiter used in the file, please verify the file and resubmit", sepFlag.String())
 		b, _ := json.Marshal(string(csvReader.LastRawRecord()))
 		log.Printf("%v: raw record as json string:\n%s", err, string(b))
 		return nil, err
@@ -191,7 +204,7 @@ func GetRawHeadersCsv(fileHd *os.File, fileName, fileFormat, compression string,
 func AdjustFillers(rawHeaders *[]string) {
 	for i := range *rawHeaders {
 		if (*rawHeaders)[i] == "" {
-			(*rawHeaders)[i] = "Filler"
+			(*rawHeaders)[i] = "FILLER"
 		}
 	}
 }

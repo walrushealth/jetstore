@@ -11,111 +11,116 @@ import (
 
 // This file contains the Compute Pipes runtime data structures
 
+// ChannelRegistry keeps track of all input and output channels
+// inputRowChannel, called input_row correspond to the main input file.
+// InputMergeChannels correspond to any merge input files.
+// ComputeChannels correspond to all other channels created for intermediate
+// steps in the compute graph.
+// OutputTableChannels correspond to the output tables that need to be written
+// ClosedChannels keeps track of which channels have been closed
 type ChannelRegistry struct {
-	// Compute Pipes input channel (inputRowChannel), called input_row
-	// correspond to the input file
-	inputRowChannel      *InputChannel
-	computeChannels      map[string]*Channel
-	outputTableChannels  []string
-	closedChannels       map[string]bool
-	closedChMutex        sync.Mutex
-	distributionChannels map[string]*[]string
+	InputRowChannel      *InputChannel
+	ComputeChannels      map[string]*Channel
+	OutputTableChannels  []string
+	ClosedChannels       map[string]bool
+	ClosedChMutex        sync.Mutex
+	DistributionChannels map[string]*[]string
 }
 
 func (r *ChannelRegistry) AddDistributionChannel(input string) string {
-	channels := r.distributionChannels[input]
+	channels := r.DistributionChannels[input]
 	if channels == nil {
 		c := make([]string, 0)
 		channels = &c
-		r.distributionChannels[input] = channels
+		r.DistributionChannels[input] = channels
 	}
 	echo := fmt.Sprintf("%s_%d", input, len(*channels))
 	*channels = append(*channels, echo)
 	// create the echo channel
-	r.computeChannels[echo] = &Channel{
-		name:    echo,
-		channel: make(chan []any),
-		columns: r.computeChannels[input].columns,
-		config:  r.computeChannels[input].config,
+	r.ComputeChannels[echo] = &Channel{
+		Name:    echo,
+		Channel: make(chan []any),
+		Columns: r.ComputeChannels[input].Columns,
+		Config:  r.ComputeChannels[input].Config,
 	}
 	log.Printf("AddDistributionChannel %s -> %s", input, echo)
 	return echo
 }
 
 func (r *ChannelRegistry) CloseChannel(name string) {
-	r.closedChMutex.Lock()
-	defer r.closedChMutex.Unlock()
-	if r.closedChannels[name] {
+	r.ClosedChMutex.Lock()
+	defer r.ClosedChMutex.Unlock()
+	if r.ClosedChannels[name] {
 		return
 	}
-	c := r.computeChannels[name]
+	c := r.ComputeChannels[name]
 	if c != nil {
 		// log.Println("** Closing channel", name)
-		close(c.channel)
+		close(c.Channel)
 	}
-	r.closedChannels[name] = true
+	r.ClosedChannels[name] = true
 }
 
 func (r *ChannelRegistry) GetInputChannel(name string, hasGroupedRows bool) (*InputChannel, error) {
 	if name == "input_row" {
-		if r.inputRowChannel.hasGroupedRows != hasGroupedRows {
+		if r.InputRowChannel.HasGroupedRows != hasGroupedRows {
 			return &InputChannel{
-				name:           name,
-				channel:        r.inputRowChannel.channel,
-				config:         r.inputRowChannel.config,
-				columns:        r.inputRowChannel.columns,
-				domainKeySpec:  r.inputRowChannel.domainKeySpec,
-				hasGroupedRows: hasGroupedRows,
+				Name:           name,
+				Channel:        r.InputRowChannel.Channel,
+				Config:         r.InputRowChannel.Config,
+				Columns:        r.InputRowChannel.Columns,
+				DomainKeySpec:  r.InputRowChannel.DomainKeySpec,
+				HasGroupedRows: hasGroupedRows,
 			}, nil
 		}
-		return r.inputRowChannel, nil
+		return r.InputRowChannel, nil
 	}
-	ch, ok := r.computeChannels[name]
+	ch, ok := r.ComputeChannels[name]
 	if !ok {
 		return nil, fmt.Errorf("error: input channel '%s' not found in ChannelRegistry", name)
 	}
 	return &InputChannel{
-		name:           name,
-		channel:        ch.channel,
-		config:         ch.config,
-		columns:        ch.columns,
-		domainKeySpec:  ch.domainKeySpec,
-		hasGroupedRows: hasGroupedRows,
+		Name:           name,
+		Channel:        ch.Channel,
+		Config:         ch.Config,
+		Columns:        ch.Columns,
+		DomainKeySpec:  ch.DomainKeySpec,
+		HasGroupedRows: hasGroupedRows,
 	}, nil
 }
 func (r *ChannelRegistry) GetOutputChannel(name string) (*OutputChannel, error) {
-	ch, ok := r.computeChannels[name]
+	ch, ok := r.ComputeChannels[name]
 	if !ok {
 		return nil, fmt.Errorf("error: output channel '%s' not found in ChannelRegistry", name)
 	}
 	return &OutputChannel{
-		name:    name,
-		channel: ch.channel,
-		config:  ch.config,
-		columns: ch.columns,
+		Name:    name,
+		Channel: ch.Channel,
+		Config:  ch.Config,
+		Columns: ch.Columns,
 	}, nil
 }
 
 type Channel struct {
-	name          string
-	channel       chan []any
-	columns       *map[string]int
-	domainKeySpec *DomainKeysSpec
-	config        *ChannelSpec
+	Name          string
+	Channel       chan []any
+	Columns       *map[string]int
+	DomainKeySpec *DomainKeysSpec
+	Config        *ChannelSpec
 }
 type InputChannel struct {
-	name           string
-	channel        <-chan []any
-	columns        *map[string]int
-	domainKeySpec  *DomainKeysSpec
-	config         *ChannelSpec
-	hasGroupedRows bool
+	Name           string
+	Channel        <-chan []any
+	Columns        *map[string]int
+	DomainKeySpec  *DomainKeysSpec
+	Config         *ChannelSpec
+	HasGroupedRows bool
 }
 type OutputChannel struct {
-	name    string
-	channel chan<- []any
-	columns *map[string]int
-	config  *ChannelSpec
+	Name    string
+	Channel chan<- []any
+	Columns *map[string]int
+	Config  *ChannelSpec
 }
 
 type BuilderContext struct {
@@ -128,6 +133,7 @@ type BuilderContext struct {
 	schemaManager      *SchemaManager
 	channelRegistry    *ChannelRegistry
 	inputParquetSchema *ParquetSchemaInfo
+	jetRules           JetRulesProxy
 	done               chan struct{}
 	errCh              chan error
 	chResults          *ChannelResults
@@ -164,6 +170,7 @@ type PipeTransformationEvaluator interface {
 	Finally()
 }
 
+// Initialize and Done are intended for aggregate transformations column evaluators
 type TransformationColumnEvaluator interface {
 	InitializeCurrentValue(currentValue *[]any)
 	Update(currentValue *[]any, input *[]any) error
@@ -239,7 +246,7 @@ func (ctx *BuilderContext) BuildPipeTransformationEvaluator(source *InputChannel
 		outCh, err = ctx.channelRegistry.GetOutputChannel(spec.OutputChannel.Name)
 		if err != nil {
 			err = fmt.Errorf("while in BuildPipeTransformationEvaluator for %s from source %s requesting output channel %s: %v",
-				spec.Type, source.name, spec.OutputChannel.Name, err)
+				spec.Type, source.Name, spec.OutputChannel.Name, err)
 			log.Println(err)
 			return nil, err
 		}
@@ -256,6 +263,9 @@ func (ctx *BuilderContext) BuildPipeTransformationEvaluator(source *InputChannel
 
 	case "group_by":
 		return ctx.NewGroupByTransformationPipe(source, outCh, spec)
+
+	case "merge":
+		return ctx.NewMergeTransformationPipe(source, outCh, spec)
 
 	case "distinct":
 		return ctx.NewDistinctTransformationPipe(source, outCh, spec)

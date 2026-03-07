@@ -57,29 +57,37 @@ import (
 // if distinct_count < spec.distinct_values_when_less_than_count. There is a hardcoded
 // check that cap distinct_values_when_less_than_count to 20.
 //
+// column_name: the name of the column using the original column name if available, otherwise
+// it is the column name from the input channel.
+// entity_hint: is determined based on the hints provided in spec.analyze_config.entity_hints
+//
 // Other columns are added based on regex_tokens, lookup_tokens, keyword_tokens, and parse functions
 // The value of the domain counts are expressed in percentage of the non null count:
 //
 //	ratio = <domain count>/(totalCount - nullCount) * 100.0
 //
-// Note that if totalCount - nullCount == 0, then ratio = -1
+// Note that if totalCount - nullCount == 0, then ratio = -1.
+//
 // inputDataType contains the data type for each column according to the parquet schema.
 // inputDataType is a map of column name -> input data type
 // Range of value for input data type: string (default if not parquet), bool, int32, int64,
 // float32, float64, date, uint32, uint64
 type AnalyzeTransformationPipe struct {
-	cpConfig         *ComputePipesConfig
-	source           *InputChannel
-	outputCh         *OutputChannel
-	inputDataType    map[string]string
-	analyzeState     []*AnalyzeState
-	columnEvaluators []TransformationColumnEvaluator
-	nbrRowsAnalyzed  int
-	firstInputRow    *[]any
-	spec             *TransformationSpec
-	padShortRows     bool
-	env              map[string]any
-	doneCh           chan struct{}
+	cpConfig          *ComputePipesConfig
+	source            *InputChannel
+	outputCh          *OutputChannel
+	inputDataType     map[string]string
+	colFragment2Hint  map[string]string
+	colName2Token     map[string]string
+	colFragment2Token map[string]string
+	analyzeState      []*AnalyzeState
+	columnEvaluators  []TransformationColumnEvaluator
+	nbrRowsAnalyzed   int
+	firstInputRow     *[]any
+	spec              *TransformationSpec
+	padShortRows      bool
+	env               map[string]any
+	doneCh            chan struct{}
 }
 
 // Implementing interface PipeTransformationEvaluator
@@ -89,7 +97,7 @@ func (ctx *AnalyzeTransformationPipe) Apply(input *[]any) error {
 		return fmt.Errorf("error: unexpected null input arg in AnalyzeTransformationPipe")
 	}
 	inputLen := len(*input)
-	expectedLen := len(ctx.source.config.Columns)
+	expectedLen := len(ctx.source.Config.Columns)
 	if inputLen < expectedLen {
 		if ctx.padShortRows {
 			for range expectedLen - inputLen {
@@ -120,11 +128,12 @@ func (ctx *AnalyzeTransformationPipe) Apply(input *[]any) error {
 // A row is produced for each column state in ctx.analyzeState.
 
 func (ctx *AnalyzeTransformationPipe) Done() error {
+	config := ctx.spec.AnalyzeConfig
 	// For each column state in ctx.analyzeState, send out a row to ctx.outputCh
 	var ok bool
 	if ctx.firstInputRow == nil {
-		err := fmt.Errorf("error: AnalyzeTransformationPipe.Done firstInputRow is null, nbr rows analyzed is %d",
-			ctx.nbrRowsAnalyzed)
+		err := fmt.Errorf("error: the input file contains no data rows, cannot perform file analysis")
+		log.Printf("AnalyzeTransformationPipe.Done: Number of rows analyzed is %d", ctx.nbrRowsAnalyzed)
 		log.Println(err)
 		return err
 	}
@@ -132,46 +141,58 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 		log.Printf("AnalyzeTransformationPipe.Done: Number of rows analyzed is %d", ctx.nbrRowsAnalyzed)
 	}
 	for _, state := range ctx.analyzeState {
-		outputRow := make([]any, len(*ctx.outputCh.columns))
+		outputRow := make([]any, len(*ctx.outputCh.Columns))
 
 		// The first base columns
 		var ipos int
-		ipos, ok = (*ctx.outputCh.columns)["column_name"]
+		ipos, ok = (*ctx.outputCh.Columns)["column_name"]
 		if ok {
 			outputRow[ipos] = state.ColumnName
 		}
 
-		ipos, ok = (*ctx.outputCh.columns)["column_pos"]
+		ipos, ok = (*ctx.outputCh.Columns)["column_pos"]
 		if ok {
 			outputRow[ipos] = state.ColumnPos
 		}
 
-		ipos, ok = (*ctx.outputCh.columns)["input_data_type"]
+		ipos, ok = (*ctx.outputCh.Columns)["input_data_type"]
 		if ok {
 			outputRow[ipos] = ctx.inputDataType[state.ColumnName]
 		}
 
-		ipos, ok = (*ctx.outputCh.columns)["entity_hint"]
-		if ok {
-			for _, ehint := range ctx.spec.AnalyzeConfig.EntityHints {
-				for _, frag := range ehint.NameFragments {
-					if strings.Contains(strings.ToUpper(state.ColumnName), strings.ToUpper(frag)) {
-						goto continueHint
+		// Determine the classification token based on column name or fragment if available
+		columnNameUpper := strings.ToUpper(state.ColumnName)
+		if config.ColumnNameToken != nil {
+			ipos, ok = (*ctx.outputCh.Columns)[config.ColumnNameToken.Name]
+			if ok {
+				token, found := ctx.colName2Token[columnNameUpper]
+				if !found {
+					for frag, tok := range ctx.colFragment2Token {
+						if strings.Contains(columnNameUpper, frag) {
+							token = tok
+							found = true
+							break
+						}
 					}
 				}
-				goto nextHint
-			continueHint:
-				for _, frag := range ehint.ExclusionFragments {
-					if strings.Contains(strings.ToUpper(state.ColumnName), strings.ToUpper(frag)) {
-						goto nextHint
-					}
+				if found {
+					outputRow[ipos] = token
 				}
-				outputRow[ipos] = ehint.Entity
-				goto doneEntityHint
-			nextHint:
 			}
 		}
-	doneEntityHint:
+
+		// Determine the entity hint based on the hints provided in spec.analyze_config.entity_hints
+		if len(config.EntityHints) > 0 {
+			ipos, ok = (*ctx.outputCh.Columns)["entity_hint"]
+			if ok {
+				for frag, hint := range ctx.colFragment2Hint {
+					if strings.Contains(columnNameUpper, frag) {
+						outputRow[ipos] = hint
+						break
+					}
+				}
+			}
+		}
 
 		var ratioFactor float64
 		if state.TotalRowCount != state.NullCount {
@@ -179,12 +200,12 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 		}
 
 		distinctCount := len(state.DistinctValues)
-		ipos, ok = (*ctx.outputCh.columns)["distinct_count"]
+		ipos, ok = (*ctx.outputCh.Columns)["distinct_count"]
 		if ok {
 			outputRow[ipos] = distinctCount
 		}
 
-		ipos, ok = (*ctx.outputCh.columns)["distinct_count_pct"]
+		ipos, ok = (*ctx.outputCh.Columns)["distinct_count_pct"]
 		if ok {
 			if ratioFactor > 0 {
 				outputRow[ipos] = float64(distinctCount) * ratioFactor
@@ -193,8 +214,8 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 			}
 		}
 
-		ipos, ok = (*ctx.outputCh.columns)["distinct_values"]
-		if ok && distinctCount < ctx.spec.AnalyzeConfig.DistinctValuesWhenLessThanCount {
+		ipos, ok = (*ctx.outputCh.Columns)["distinct_values"]
+		if ok && distinctCount < config.DistinctValuesWhenLessThanCount {
 			distinctValues := slices.Sorted(maps.Keys(state.DistinctValues))
 			buf := new(bytes.Buffer)
 			w := csv.NewWriter(buf)
@@ -209,28 +230,28 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 			}
 		}
 
-		ipos, ok = (*ctx.outputCh.columns)["null_count"]
+		ipos, ok = (*ctx.outputCh.Columns)["null_count"]
 		if ok {
 			outputRow[ipos] = state.NullCount
 		}
 
-		ipos, ok = (*ctx.outputCh.columns)["null_count_pct"]
+		ipos, ok = (*ctx.outputCh.Columns)["null_count_pct"]
 		if ok {
 			outputRow[ipos] = float64(state.NullCount) / float64(state.TotalRowCount) * 100
 		}
 
-		ipos, ok = (*ctx.outputCh.columns)["total_count"]
+		ipos, ok = (*ctx.outputCh.Columns)["total_count"]
 		if ok {
 			outputRow[ipos] = state.TotalRowCount
 		}
 
 		if state.LenWelford != nil {
 			avrLen, avrVar := state.LenWelford.Finalize()
-			ipos, ok = (*ctx.outputCh.columns)["avr_length"]
+			ipos, ok = (*ctx.outputCh.Columns)["avr_length"]
 			if ok {
 				outputRow[ipos] = avrLen
 			}
-			ipos, ok = (*ctx.outputCh.columns)["length_var"]
+			ipos, ok = (*ctx.outputCh.Columns)["length_var"]
 			if ok {
 				outputRow[ipos] = avrVar
 			}
@@ -242,7 +263,7 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 
 		// The regex tokens
 		for name, m := range state.RegexMatch {
-			ipos, ok = (*ctx.outputCh.columns)[name]
+			ipos, ok = (*ctx.outputCh.Columns)[name]
 			if ok {
 				if ratioFactor > 0 {
 					outputRow[ipos] = float64(m.Count) * ratioFactor
@@ -260,7 +281,7 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 		// The lookup tokens
 		for _, lookupState := range state.LookupState {
 			for name, m := range lookupState.LookupMatch {
-				ipos, ok := (*ctx.outputCh.columns)[name]
+				ipos, ok := (*ctx.outputCh.Columns)[name]
 				if ok {
 					if ratioFactor > 0 {
 						outputRow[ipos] = float64(m.Count) * ratioFactor
@@ -273,7 +294,7 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 
 		// The keywords match
 		for name, m := range state.KeywordMatch {
-			ipos, ok = (*ctx.outputCh.columns)[name]
+			ipos, ok = (*ctx.outputCh.Columns)[name]
 			if ok {
 				if ratioFactor > 0 {
 					outputRow[ipos] = float64(m.Count) * ratioFactor
@@ -285,141 +306,42 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 
 		// The functions tokens
 		var dateMinMax, doubleMinMax, textMinMax, winningValue *MinMaxValue
-		var dateLargeValue, doubleLargeValue, textLargeValue, winningLargeValue *LargeValue
-		for _, fc := range state.FunctionMatch {
-			m := fc.GetMatchToken()
-			for token, count := range m {
-				ipos, ok = (*ctx.outputCh.columns)[token]
-				if ok {
-					if ratioFactor > 0 {
-						outputRow[ipos] = float64(count) * ratioFactor
-					} else {
-						outputRow[ipos] = -1.0
-					}
-				}
-			}
-			minMax := fc.GetMinMaxValues()
-			if minMax != nil {
-				switch minMax.MinMaxType {
-				case "date":
-					dateMinMax = minMax
-				case "double":
-					doubleMinMax = minMax
-				case "text":
-					textMinMax = minMax
-				}
-			}
-			largeValues := fc.GetLargeValue()
-			if largeValues != nil {
-				switch largeValues.ValueType {
-				case "date":
-					dateLargeValue = largeValues
-				case "double":
-					doubleLargeValue = largeValues
-				case "text":
-					textLargeValue = largeValues
-				}
-			}
+		if state.ParseDate != nil {
+			dateMinMax = state.ParseDate.GetMinMaxValues()
+			state.ParseDate.Done(ctx, outputRow)
 		}
-		// Pick the winning minmax results
-		nonNilCount := state.TotalRowCount - state.NullCount
-		if nonNilCount > 0 {
-			switch {
-			case dateMinMax != nil && 2*dateMinMax.HitCount > nonNilCount:
-				winningValue = dateMinMax
-				winningLargeValue = dateLargeValue
-			case doubleMinMax != nil && 4*doubleMinMax.HitCount > 3*nonNilCount:
-				winningValue = doubleMinMax
-				winningLargeValue = doubleLargeValue
-			default:
-				winningValue = textMinMax
-				winningLargeValue = textLargeValue
-			}
+		if state.ParseDouble != nil {
+			doubleMinMax = state.ParseDouble.GetMinMaxValues()
+			state.ParseDouble.Done(ctx, outputRow)
+		}
+		if state.ParseText != nil {
+			textMinMax = state.ParseText.GetMinMaxValues()
+			state.ParseText.Done(ctx, outputRow)
+		}
 
-			// Assign to output columns
-			if dateMinMax != nil {
-				ipos, ok = (*ctx.outputCh.columns)["min_date"]
-				if ok {
-					outputRow[ipos] = dateMinMax.MinValue
-				}
-				ipos, ok = (*ctx.outputCh.columns)["max_date"]
-				if ok {
-					outputRow[ipos] = dateMinMax.MaxValue
-				}
+		// Pick the winning minmax results
+		switch {
+		case dateMinMax != nil && dateMinMax.NbrSamples > 0 && dateMinMax.HitRatio > 0.98:
+			winningValue = dateMinMax
+		case doubleMinMax != nil && doubleMinMax.NbrSamples > 0 && doubleMinMax.HitRatio > 0.98:
+			winningValue = doubleMinMax
+		default:
+			winningValue = textMinMax
+		}
+
+		// Assign to output columns
+		if winningValue != nil {
+			ipos, ok = (*ctx.outputCh.Columns)["min_value"]
+			if ok {
+				outputRow[ipos] = winningValue.MinValue
 			}
-			if dateLargeValue != nil {
-				ipos, ok = (*ctx.outputCh.columns)["large_date_pct"]
-				if ok {
-					if ratioFactor > 0 {
-						outputRow[ipos] = dateLargeValue.HitCount * ratioFactor
-					} else {
-						outputRow[ipos] = -1.0
-					}
-				}
+			ipos, ok = (*ctx.outputCh.Columns)["max_value"]
+			if ok {
+				outputRow[ipos] = winningValue.MaxValue
 			}
-			if doubleMinMax != nil {
-				ipos, ok = (*ctx.outputCh.columns)["min_double"]
-				if ok {
-					outputRow[ipos] = doubleMinMax.MinValue
-				}
-				ipos, ok = (*ctx.outputCh.columns)["max_double"]
-				if ok {
-					outputRow[ipos] = doubleMinMax.MaxValue
-				}
-			}
-			if doubleLargeValue != nil {
-				ipos, ok = (*ctx.outputCh.columns)["large_double_pct"]
-				if ok {
-					if ratioFactor > 0 {
-						outputRow[ipos] = doubleLargeValue.HitCount * ratioFactor
-					} else {
-						outputRow[ipos] = -1.0
-					}
-				}
-			}
-			if textMinMax != nil {
-				ipos, ok = (*ctx.outputCh.columns)["min_length"]
-				if ok {
-					outputRow[ipos] = textMinMax.MinValue
-				}
-				ipos, ok = (*ctx.outputCh.columns)["max_length"]
-				if ok {
-					outputRow[ipos] = textMinMax.MaxValue
-				}
-			}
-			if textLargeValue != nil {
-				ipos, ok = (*ctx.outputCh.columns)["large_text_pct"]
-				if ok {
-					if ratioFactor > 0 {
-						outputRow[ipos] = textLargeValue.HitCount * ratioFactor
-					} else {
-						outputRow[ipos] = -1.0
-					}
-				}
-			}
-			if winningValue != nil {
-				ipos, ok = (*ctx.outputCh.columns)["min_value"]
-				if ok {
-					outputRow[ipos] = winningValue.MinValue
-				}
-				ipos, ok = (*ctx.outputCh.columns)["max_value"]
-				if ok {
-					outputRow[ipos] = winningValue.MaxValue
-				}
-				ipos, ok = (*ctx.outputCh.columns)["minmax_type"]
-				if ok {
-					outputRow[ipos] = winningValue.MinMaxType
-				}
-			}
-			if winningLargeValue != nil {
-				ipos, ok = (*ctx.outputCh.columns)["large_value_pct"]
-				if ok {
-					if ratioFactor > 0 {
-						outputRow[ipos] = winningLargeValue.HitCount * ratioFactor
-					} else {
-						outputRow[ipos] = -1.0
-					}
-				}
+			ipos, ok = (*ctx.outputCh.Columns)["minmax_type"]
+			if ok {
+				outputRow[ipos] = winningValue.MinMaxType
 			}
 		}
 
@@ -442,7 +364,7 @@ func (ctx *AnalyzeTransformationPipe) Done() error {
 		// Send the column result to output
 		// log.Println("**!@@ ** Send AGGREGATE Result to", ctx.outputCh.name)
 		select {
-		case ctx.outputCh.channel <- outputRow:
+		case ctx.outputCh.Channel <- outputRow:
 		case <-ctx.doneCh:
 			log.Println("AnalyzeTransform interrupted")
 		}
@@ -457,17 +379,17 @@ func (ctx *AnalyzeTransformationPipe) Finally() {}
 func (ctx *BuilderContext) NewAnalyzeTransformationPipe(source *InputChannel, outputCh *OutputChannel,
 	spec *TransformationSpec) (*AnalyzeTransformationPipe, error) {
 
-	var err error
-	if spec == nil {
-		return nil, fmt.Errorf(
-			"error: Analyze Pipe Transformation spec (analyze_config) is null")
+	if spec == nil || spec.AnalyzeConfig == nil || outputCh.Columns == nil {
+		return nil, fmt.Errorf("error: analyze Pipe Transformation spec is missing analyze_config section or input columns map is nil")
 	}
+
+	var err error
 	config := spec.AnalyzeConfig
 	// Must have NewRecord set to true
 	spec.NewRecord = true
 
 	// Get the input parquet schema, if avail
-	inputDataType := make(map[string]string, len(source.config.Columns))
+	inputDataType := make(map[string]string, len(source.Config.Columns))
 	parquetSchemaInfo := ctx.inputParquetSchema
 	if parquetSchemaInfo != nil {
 		for _, field := range parquetSchemaInfo.Fields {
@@ -481,8 +403,8 @@ func (ctx *BuilderContext) NewAnalyzeTransformationPipe(source *InputChannel, ou
 			}
 		}
 	} else {
-		for i := range source.config.Columns {
-			inputDataType[source.config.Columns[i]] = "string"
+		for i := range source.Config.Columns {
+			inputDataType[source.Config.Columns[i]] = "string"
 		}
 	}
 
@@ -491,14 +413,64 @@ func (ctx *BuilderContext) NewAnalyzeTransformationPipe(source *InputChannel, ou
 		config.DistinctValuesWhenLessThanCount = 20
 	}
 
+	// Check to see if the original column names are available
+	columnNames := source.Config.Columns
+	originalColumnNames := ctx.cpConfig.CommonRuntimeArgs.SourcesConfig.MainInput.OriginalInputColumns
+	if len(originalColumnNames) > 0 {
+		columnNames = originalColumnNames
+		if len(columnNames) != len(source.Config.Columns) {
+			err = fmt.Errorf("error: number of original column names (%d) is different from number of input channel columns (%d)",
+				len(columnNames), len(source.Config.Columns))
+			log.Println(err)
+			return nil, err
+		}
+	}
+
+	// Set up the column name fragments to entity hint map if available
+	colFragment2Hint := make(map[string]string)
+	if config.EntityHints != nil {
+		for _, ehint := range config.EntityHints {
+			for _, frag := range ehint.NameFragments {
+				colFragment2Hint[strings.ToUpper(frag)] = ehint.Entity
+			}
+		}
+	}
+
+	// Set up the column name to token map if available
+	colName2Token := make(map[string]string)
+	if config.ColumnNameToken != nil {
+		for _, tokenEntry := range config.ColumnNameToken.Lookup {
+			for _, colName := range tokenEntry.ColumnNames {
+				colName2Token[strings.ToUpper(colName)] = tokenEntry.Name
+			}
+		}
+	}
+
+	// Set up the column fragment to token map if available
+	colFragment2Token := make(map[string]string)
+	if config.ColumnNameToken != nil {
+		for _, tokenEntry := range config.ColumnNameToken.Lookup {
+			for _, colFragment := range tokenEntry.ColumnNameFragments {
+				colFragment2Token[strings.ToUpper(colFragment)] = tokenEntry.Name
+			}
+		}
+	}
+
+	// Set up the blank field markers if available
+	sp := ctx.schemaManager.schemaProviders[config.SchemaProvider]
+	var blankMarkers *BlankFieldMarkers
+	if sp != nil {
+		blankMarkers = sp.BlankFieldMarkers()
+	}
+
 	// Set up the AnalyzeState for each input column
-	analyzeState := make([]*AnalyzeState, len(source.config.Columns))
+	analyzeState := make([]*AnalyzeState, len(columnNames))
 	for i := range analyzeState {
 		analyzeState[i], err =
-			ctx.NewAnalyzeState(source.config.Columns[i], i, outputCh.columns, spec)
+			ctx.NewAnalyzeState(columnNames[i], i, outputCh.Columns, sp, blankMarkers, spec)
 		if err != nil {
 			return nil, fmt.Errorf("while calling NewAnalyzeState for column %s: %v",
-				source.config.Columns[i], err)
+				source.Config.Columns[i], err)
 		}
 	}
 
@@ -515,15 +487,18 @@ func (ctx *BuilderContext) NewAnalyzeTransformationPipe(source *InputChannel, ou
 	}
 
 	return &AnalyzeTransformationPipe{
-		cpConfig:         ctx.cpConfig,
-		source:           source,
-		outputCh:         outputCh,
-		inputDataType:    inputDataType,
-		analyzeState:     analyzeState,
-		columnEvaluators: columnEvaluators,
-		padShortRows:     config.PadShortRowsWithNulls,
-		spec:             spec,
-		env:              ctx.env,
-		doneCh:           ctx.done,
+		cpConfig:          ctx.cpConfig,
+		source:            source,
+		outputCh:          outputCh,
+		inputDataType:     inputDataType,
+		colFragment2Hint:  colFragment2Hint,
+		colName2Token:     colName2Token,
+		colFragment2Token: colFragment2Token,
+		analyzeState:      analyzeState,
+		columnEvaluators:  columnEvaluators,
+		padShortRows:      config.PadShortRowsWithNulls,
+		spec:              spec,
+		env:               ctx.env,
+		doneCh:            ctx.done,
 	}, nil
 }

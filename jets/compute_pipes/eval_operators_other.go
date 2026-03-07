@@ -5,11 +5,13 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type opDMonths struct{}
 
-func (op *opDMonths) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opDMonths) Eval(lhs any, rhs any) (any, error) {
 	if lhs == nil || rhs == nil {
 		return nil, nil
 	}
@@ -30,7 +32,7 @@ func (op *opDMonths) eval(lhs interface{}, rhs interface{}) (interface{}, error)
 
 type opApplyFormat struct{}
 
-func (op *opApplyFormat) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opApplyFormat) Eval(lhs any, rhs any) (any, error) {
 	if lhs == nil || rhs == nil {
 		return nil, nil
 	}
@@ -62,7 +64,7 @@ type opApplyRegex struct {
 	re *regexp.Regexp
 }
 
-func (op *opApplyRegex) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opApplyRegex) Eval(lhs any, rhs any) (any, error) {
 	if lhs == nil || rhs == nil {
 		return nil, nil
 	}
@@ -96,7 +98,7 @@ func (op *opApplyRegex) eval(lhs interface{}, rhs interface{}) (interface{}, err
 // Operator length() -- unary operator
 type opLength struct{}
 
-func (op *opLength) eval(lhs interface{}, _ interface{}) (interface{}, error) {
+func (op *opLength) Eval(lhs any, _ any) (any, error) {
 	if lhs == nil {
 		return 0, nil
 	}
@@ -107,10 +109,17 @@ func (op *opLength) eval(lhs interface{}, _ interface{}) (interface{}, error) {
 	return nil, fmt.Errorf("opLength expecting string argument, rejected")
 }
 
+// Operator NEW_UUID -- unary operator
+type opNewUUID struct{}
+
+func (op *opNewUUID) Eval(_ any, _ any) (any, error) {
+	return uuid.NewString(), nil
+}
+
 // Operator IN
 type opIn struct{}
 
-func (op *opIn) eval(lhs interface{}, rhs interface{}) (interface{}, error) {
+func (op *opIn) Eval(lhs any, rhs any) (any, error) {
 	values, ok := rhs.(map[any]bool)
 	if !ok {
 		return 0, fmt.Errorf("error: operator IN is expecting static_list as rhs argument")

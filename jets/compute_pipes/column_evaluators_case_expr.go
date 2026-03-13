@@ -21,8 +21,8 @@ type columnExpression struct {
 	evalExpr  evalExpression
 }
 
-func (ctx *caseExprEvaluator) InitializeCurrentValue(currentValue *[]interface{}) {}
-func (ctx *caseExprEvaluator) Update(currentValue *[]interface{}, input *[]interface{}) error {
+func (ctx *caseExprEvaluator) InitializeCurrentValue(currentValue *[]any) {}
+func (ctx *caseExprEvaluator) Update(currentValue *[]any, input *[]any) error {
 	if currentValue == nil || input == nil {
 		return fmt.Errorf("error caseExprEvaluator.update cannot have nil currentValue or input")
 	}
@@ -30,15 +30,15 @@ func (ctx *caseExprEvaluator) Update(currentValue *[]interface{}, input *[]inter
 		return fmt.Errorf("error caseExprEvaluator.update cannot have nil caseExpr")
 	}
 	for i := range ctx.caseExpr {
-		when, err := ctx.caseExpr[i].whenCase.eval(*input)
+		when, err := ctx.caseExpr[i].whenCase.Eval(*input)
 		if err != nil {
-			return fmt.Errorf("while evaluating case_expr when clause: %v", err)
+			return fmt.Errorf("while evaluating case_expr when clause #%d: %v", i, err)
 		}
 		if ToBool(when) {
 			for _, node := range ctx.caseExpr[i].thenCases {
-				value, err := node.evalExpr.eval(*input)
+				value, err := node.evalExpr.Eval(*input)
 				if err != nil {
-					return fmt.Errorf("while evaluating case_expr then clause: %v", err)
+					return fmt.Errorf("while evaluating case_expr then clause #%d: %v", i, err)
 				}
 				(*currentValue)[node.outputPos] = value
 			}
@@ -47,15 +47,15 @@ func (ctx *caseExprEvaluator) Update(currentValue *[]interface{}, input *[]inter
 	}
 	// No match apply default if provided
 	for _, node := range ctx.elseExpr {
-		value, err := node.evalExpr.eval(*input)
+		value, err := node.evalExpr.Eval(*input)
 		if err != nil {
-			return fmt.Errorf("while evaluating case_expr then clause: %v", err)
+			return fmt.Errorf("while evaluating case_expr else clause: %v", err)
 		}
 		(*currentValue)[node.outputPos] = value
 	}
 	return nil
 }
-func (ctx *caseExprEvaluator) Done(currentValue *[]interface{}) error {
+func (ctx *caseExprEvaluator) Done(currentValue *[]any) error {
 	return nil
 }
 func (ctx *BuilderContext) BuildCaseExprTCEvaluator(source *InputChannel, outCh *OutputChannel,
@@ -67,22 +67,22 @@ func (ctx *BuilderContext) BuildCaseExprTCEvaluator(source *InputChannel, outCh 
 
 	caseExpr := make([]caseExprClause, len(spec.CaseExpr))
 	for i := range spec.CaseExpr {
-		whenCase, err := ctx.BuildExprNodeEvaluator(source.name, *source.columns, &spec.CaseExpr[i].When)
+		whenCase, err := ctx.BuildExprNodeEvaluator(source.Name, *source.Columns, &spec.CaseExpr[i].When)
 		if err != nil {
 			return nil, fmt.Errorf("while building when clause for item %d: %v", i, err)
 		}
 		thenCases := make([]*columnExpression, len(spec.CaseExpr[i].Then))
 		for i, node := range spec.CaseExpr[i].Then {
-			expr, err := ctx.BuildExprNodeEvaluator(source.name, *source.columns, node)
+			expr, err := ctx.BuildExprNodeEvaluator(source.Name, *source.Columns, node)
 			if err != nil {
 				return nil, fmt.Errorf("while building then clause for item %d: %v", i, err)
 			}
 			if node.Name == "" {
 				return nil, fmt.Errorf("error: case operator is missing column name in then clause")
 			}
-			outputPos, ok := (*outCh.columns)[node.Name]
+			outputPos, ok := (*outCh.Columns)[node.Name]
 			if !ok {
-				return nil, fmt.Errorf("error column %s not found in output source %s", node.Name, outCh.name)
+				return nil, fmt.Errorf("error column %s not found in output source %s", node.Name, outCh.Name)
 			}
 			thenCases[i] = &columnExpression{
 				outputPos: outputPos,
@@ -97,16 +97,16 @@ func (ctx *BuilderContext) BuildCaseExprTCEvaluator(source *InputChannel, outCh 
 
 	elseExpr := make([]*columnExpression, len(spec.ElseExpr))
 	for i, node := range spec.ElseExpr {
-		expr, err := ctx.BuildExprNodeEvaluator(source.name, *source.columns, node)
+		expr, err := ctx.BuildExprNodeEvaluator(source.Name, *source.Columns, node)
 		if err != nil {
 			return nil, fmt.Errorf("while building else clause for case_expr: %v", err)
 		}
 		if node.Name == "" {
 			return nil, fmt.Errorf("error: case operator is missing column name in else clause")
 		}
-		outputPos, ok := (*outCh.columns)[node.Name]
+		outputPos, ok := (*outCh.Columns)[node.Name]
 		if !ok {
-			return nil, fmt.Errorf("error column %s not found in output source %s", node.Name, outCh.name)
+			return nil, fmt.Errorf("error column %s not found in output source %s", node.Name, outCh.Name)
 		}
 		elseExpr[i] = &columnExpression{
 			outputPos: outputPos,

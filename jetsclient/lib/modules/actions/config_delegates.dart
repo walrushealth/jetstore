@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:jetsclient/button_config.dart';
 import 'package:jetsclient/modules/user_flows/file_mapping/form_action_helpers.dart';
 import 'package:jetsclient/routes/jets_router_delegate.dart';
 import 'package:jetsclient/components/dialogs.dart';
@@ -61,6 +62,22 @@ String? homeFormValidator(
 }
 
 /// Source Configuration Form Actions
+Future<String?> resubmitPipeline(
+    BuildContext context, JetsFormState formState) async {
+  var state = formState.getState(0);
+  state[FSK.sessionId] = unpack(state[FSK.sessionId]);
+  // print('state contains $state');
+  print('resubmiting: session_id is ${state[FSK.sessionId]}');
+  // Send the pipeline resubmit insert
+  var encodedJsonBody = jsonEncode(<String, dynamic>{
+    'action': 'resubmit_pipeline',
+    'data': [state],
+  }, toEncodable: (_) => '');
+  await postSimpleAction(
+      context, formState, ServerEPs.dataTableEP, encodedJsonBody);
+  return null;
+}
+
 Future<String?> homeFormActions(BuildContext context,
     GlobalKey<FormState> formKey, JetsFormState formState, String actionKey,
     {group = 0}) async {
@@ -78,30 +95,14 @@ Future<String?> homeFormActions(BuildContext context,
         state[FSK.mergedInputRegistryKeys] =
             '{${(state[FSK.mergedInputRegistryKeys] as List<String>).join(',')}}';
       }
-      if (state[FSK.pipelineConfigKey] is List<String>) {
-        state[FSK.pipelineConfigKey] = state[FSK.pipelineConfigKey][0];
-      }
-      if (state[FSK.mainInputRegistryKey] is List<String>) {
-        state[FSK.mainInputRegistryKey] = state[FSK.mainInputRegistryKey][0];
-      }
-      if (state[FSK.mainInputFileKey] is List<String>) {
-        state[FSK.mainInputFileKey] = state[FSK.mainInputFileKey][0];
-      }
-      if (state[FSK.client] is List<String>) {
-        state[FSK.client] = state[FSK.client][0];
-      }
-      if (state[FSK.processName] is List<String>) {
-        state[FSK.processName] = state[FSK.processName][0];
-      }
-      if (state[FSK.mainObjectType] is List<String>) {
-        state[FSK.mainObjectType] = state[FSK.mainObjectType][0];
-      }
-      if (state[FSK.sourcePeriodKey] is List<String>) {
-        state[FSK.sourcePeriodKey] = state[FSK.sourcePeriodKey][0];
-      }
-      if (state[FSK.wsName] is List<String>) {
-        state[FSK.wsName] = state[FSK.wsName][0];
-      }
+      state[FSK.pipelineConfigKey] = unpack(state[FSK.pipelineConfigKey]);
+      state[FSK.mainInputRegistryKey] = unpack(state[FSK.mainInputRegistryKey]);
+      state[FSK.mainInputFileKey] = unpack(state[FSK.mainInputFileKey]);
+      state[FSK.client] = unpack(state[FSK.client]);
+      state[FSK.processName] = unpack(state[FSK.processName]);
+      state[FSK.mainObjectType] = unpack(state[FSK.mainObjectType]);
+      state[FSK.sourcePeriodKey] = unpack(state[FSK.sourcePeriodKey]);
+      state[FSK.wsName] = unpack(state[FSK.wsName]);
       state['status'] = StatusKeys.submitted;
       state['user_email'] = JetsRouterDelegate().user.email;
       state['session_id'] = "${DateTime.now().millisecondsSinceEpoch}";
@@ -125,12 +126,17 @@ Future<String?> homeFormActions(BuildContext context,
     case ActionKeys.dialogCancel:
       Navigator.of(context).pop();
       break;
+
+    case ActionKeys.resubmitPipeline:
+      return resubmitPipeline(context, formState);
+
     default:
-      print('Oops unknown ActionKey for home form: $actionKey');
+      // Delegate to AppConfig ButtonConfig Actions
+      return AppConfig()
+          .buttonConfigActions(context, formKey, formState, actionKey);
   }
   return null;
 }
-
 
 /// Process and Rules Config Form / Dialog Validator
 String? processConfigFormValidator(
@@ -189,7 +195,6 @@ Future<String?> processInputFormActions(BuildContext context,
     GlobalKey<FormState> formKey, JetsFormState formState, String actionKey,
     {group = 0}) async {
   switch (actionKey) {
-
     // Supporting Process Config UF as well as expert mode
     case ActionKeys.addProcessInputOk:
       var valid = formKey.currentState!.validate();
@@ -497,8 +502,10 @@ Future<String?> ruleConfigv2FormActions(BuildContext context,
         'data': [updateState],
       }, toEncodable: (_) => '');
 
-      final result =
-          await postRawAction(context, ServerEPs.dataTableEP, encodedJsonBody);
+      final result = await postRawAction(
+          context, ServerEPs.dataTableEP, encodedJsonBody,
+          successMessage: 'Rule Configuration successfully saved',
+          failureMessage: 'Failed to save Rule Configuration');
       if (result.statusCode == 401) return "Not Authorized";
       if (result.statusCode == 200) {
         if (context.mounted) {
@@ -534,8 +541,8 @@ Future<String?> ruleConfigv2FormActions(BuildContext context,
         'data': [state],
       }, toEncodable: (_) => '');
       if (context.mounted) {
-      formState.clearSelectedRow(group, DTKeys.ruleConfigv2Table);
-      state.remove(DTKeys.ruleConfigv2Table);
+        formState.clearSelectedRow(group, DTKeys.ruleConfigv2Table);
+        state.remove(DTKeys.ruleConfigv2Table);
         await postSimpleAction(
             context, formState, ServerEPs.dataTableEP, encodedJsonBody);
       }

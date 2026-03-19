@@ -340,7 +340,7 @@ func GetWorkspaceDomainTables() (map[string]*rete.TableNode, error) {
 		if domainTablesMap == nil {
 			domainTablesMap = make(map[string]*rete.TableNode)
 			fpath := fmt.Sprintf("%s/%s/build/tables.json", workspaceHome, wsPrefix)
-			log.Println("*** Loading Domain Tables definitions from:", fpath)
+			// log.Println("*** Loading Domain Tables definitions from:", fpath)
 			file, err := os.ReadFile(fpath)
 			if err != nil {
 				err = fmt.Errorf("while reading tables.json file (GetWorkspaceDomainTables):%v", err)
@@ -353,7 +353,7 @@ func GetWorkspaceDomainTables() (map[string]*rete.TableNode, error) {
 				log.Println(err)
 				return nil, err
 			}
-			log.Printf("*** Domain Tables Loaded with %d table definitions", len(domainTablesMap))
+			// log.Printf("*** Domain Tables Loaded with %d table definitions", len(domainTablesMap))
 		}
 	}
 	return domainTablesMap, nil
@@ -365,10 +365,10 @@ func GetWorkspaceDataProperties() (map[string]*rete.DataPropertyNode, error) {
 		dataPropertyInfoMx.Lock()
 		defer dataPropertyInfoMx.Unlock()
 		if dataPropertyInfoMap == nil {
-			log.Println("*** Load Data Properties from local Workspace")
+			// log.Println("*** Load Data Properties from local Workspace")
 			dataPropertyInfoMap = make(map[string]*rete.DataPropertyNode)
 			fpath := fmt.Sprintf("%s/%s/build/properties.json", workspaceHome, wsPrefix)
-			log.Println("Reading Data Properties definitions from:", fpath)
+			// log.Println("Reading Data Properties definitions from:", fpath)
 			file, err := os.ReadFile(fpath)
 			if err != nil {
 				err = fmt.Errorf("while reading properties.json file (GetWorkspaceDataProperties):%v", err)
@@ -381,7 +381,7 @@ func GetWorkspaceDataProperties() (map[string]*rete.DataPropertyNode, error) {
 				log.Println(err)
 				return nil, err
 			}
-			log.Printf("*** Data Properties Loaded with %d property definitions", len(dataPropertyInfoMap))
+			// log.Printf("*** Data Properties Loaded with %d property definitions", len(dataPropertyInfoMap))
 		}
 	}
 	return dataPropertyInfoMap, nil
@@ -403,8 +403,7 @@ func GetMultiValueProperties(className string) ([]string, error) {
 			multiValueProperties = append(multiValueProperties, p.ColumnName)
 		}
 	}
-	//***
-	log.Printf("*** Multi-value properties for class %s: %v", className, multiValueProperties)
+	// log.Printf("*** Multi-value properties for class %s: %v", className, multiValueProperties)
 	return multiValueProperties, nil
 }
 
@@ -463,7 +462,7 @@ type InputMappingExpr struct {
 	ErrorMessage          sql.NullString
 }
 
-// read mapping definitions
+// read mapping definitions from process_mapping
 func GetInputMapping(dbpool *pgxpool.Pool, tableName string) ([]InputMappingExpr, error) {
 	item, _ := inputMappingCache.Load(tableName)
 	if item == nil {
@@ -499,4 +498,23 @@ func GetInputMapping(dbpool *pgxpool.Pool, tableName string) ([]InputMappingExpr
 		inputMappingCache.Store(tableName, item)
 	}
 	return item.([]InputMappingExpr), nil
+}
+
+// read code value mapping json from source_config and convert it to map[string]string
+func GetCodeValueMapping(dbpool *pgxpool.Pool, tableName string) (map[string]map[string]string, error) {
+	var mappingJson sql.NullString
+	// Get the code value json from source_config table
+	stmt := "SELECT code_values_mapping_json FROM jetsapi.source_config WHERE table_name = $1"
+	err := dbpool.QueryRow(context.Background(), stmt, tableName).Scan(&mappingJson)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+	if !mappingJson.Valid {
+		return nil, nil
+	}
+	var codeValueMapping map[string]map[string]string
+	if err := json.Unmarshal([]byte(mappingJson.String), &codeValueMapping); err != nil {
+		return nil, err
+	}
+	return codeValueMapping, nil
 }

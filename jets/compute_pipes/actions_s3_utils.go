@@ -238,6 +238,10 @@ func (cpCtx *ComputePipesContext) DownloadS3Files(inFolderPath []string, externa
 	// perform a check
 	l := len(inFolderPath)
 	if l != len(fileKeys) || l != len(cpCtx.FileNamesCh) {
+		for i := range cpCtx.FileNamesCh {
+			close(cpCtx.FileNamesCh[i])
+		}
+		close(cpCtx.DownloadS3ResultCh)
 		return fmt.Errorf("internal error: mismatch in number of input folders (%d), file keys (%d) and channels (%d)",
 			l, len(fileKeys), len(cpCtx.FileNamesCh))
 	}
@@ -288,11 +292,14 @@ func (cpCtx *ComputePipesContext) downloadS3Files(inFolderPath, externalBucket s
 				retry++
 				goto do_retry
 			}
+			err = fmt.Errorf("failed to download s3 file %s: %v", fileKeys[i].key, err)
+			log.Println(err)
 			cpCtx.DownloadS3ResultCh <- DownloadS3Result{
 				InputFilesCount: i,
 				TotalFilesSize:  totalFilesSize,
-				Err:             fmt.Errorf("failed to download s3 file %s: %v", fileKeys[i].key, err),
+				Err:             err,
 			}
+			cpCtx.DoneAll(err)
 			return
 		}
 		if fileSize > 0 { // skip sentinel files

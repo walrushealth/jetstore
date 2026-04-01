@@ -24,10 +24,14 @@ func init() {
 
 // Function to write transformed row to database
 func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
-	inputSchemaCh <-chan ParquetSchemaInfo, computePipesInputCh <-chan []any,
+	inputSchemaCh <-chan *ParquetSchemaInfo, computePipesInputCh <-chan []any,
 	computePipesMergeChs []chan []any) {
 
 	// log.Println("Entering StartComputePipes")
+	cpCtx.ChResults.Copy2DbResultCh = make(chan chan ComputePipesResult, 10000)
+	cpCtx.ChResults.WritePartitionsResultCh = make(chan chan ComputePipesResult, 10000)
+	cpCtx.ChResults.JetrulesWorkerResultCh = make(chan chan JetrulesWorkerResult, 10000)
+	cpCtx.ChResults.ClusteringResultCh = make(chan chan ClusteringResult, 10000)
 
 	defer func() {
 		// Catch the panic that might be generated downstream
@@ -41,6 +45,8 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 			close(cpCtx.Done)
 			close(cpCtx.ChResults.Copy2DbResultCh)
 			close(cpCtx.ChResults.WritePartitionsResultCh)
+			close(cpCtx.ChResults.JetrulesWorkerResultCh)
+			close(cpCtx.ChResults.ClusteringResultCh)
 		}
 	}()
 
@@ -83,8 +89,11 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 	if inputSchemaCh != nil {
 		// Get the parquet schema from the channel as it is being extracted from the
 		// first input file
-		is := <-inputSchemaCh
-		inputParquetSchema = &is
+		inputParquetSchema = <-inputSchemaCh
+		if inputParquetSchema == nil {
+			// Got an error, bail out
+			goto gotError
+		}
 		mainInputSchemaProvider.SetParquetSchema(inputParquetSchema)
 		// Get the columns from the schema
 		parquetColumns := inputParquetSchema.Columns()
@@ -406,17 +415,14 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 	return
 
 gotError:
-	log.Println("error in StartComputePipes:", cpErr)
-	cpCtx.ErrCh <- cpErr
-	close(cpCtx.Done)
+	if cpErr != nil {
+		log.Println("error in StartComputePipes:", cpErr)
+	}
+	cpCtx.DoneAll(cpErr)
 	close(cpCtx.ChResults.Copy2DbResultCh)
 	close(cpCtx.ChResults.WritePartitionsResultCh)
 	close(cpCtx.ChResults.JetrulesWorkerResultCh)
 	close(cpCtx.ChResults.ClusteringResultCh)
-	if cpCtx.S3DeviceMgr == nil {
-		// Got error before the s3 device manager was created, close the chan manually
-		close(cpCtx.ChResults.S3PutObjectResultCh)
-	}
 }
 
 func UnmarshalComputePipesConfig(computePipesJson *string) (*ComputePipesConfig, error) {

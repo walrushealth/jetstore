@@ -7,26 +7,31 @@ import (
 	"time"
 
 	"github.com/artisoft-io/jetstore/jets/jetrules/rdf"
+	"github.com/artisoft-io/jetstore/jets/utils"
 )
 
 // This file contains function to cast input data into rdf type based on domain classes
 type CastToRdfFnc struct {
 	property string
 	rdfType  string
-	isArray  bool
+	isArray  *bool
 }
+
 func (c *CastToRdfFnc) String() string {
 	tag := ""
-	if c.isArray {
+	switch {
+	case c.isArray == nil:
+		tag = "[?]"
+	case *c.isArray:
 		tag = "[]"
 	}
 	return fmt.Sprintf("%s (%s%s)", c.property, tag, c.rdfType)
 }
 func (c *CastToRdfFnc) Cast(v any) (any, error) {
-	return castToRdfType(v, c.rdfType, c.isArray)
+	return CastToRdfType(v, c.rdfType, c.isArray)
 }
 
-func NewCastToRdfFnc(property string, rdfType string, isArray bool) *CastToRdfFnc {
+func NewCastToRdfFnc(property string, rdfType string, isArray *bool) *CastToRdfFnc {
 	return &CastToRdfFnc{
 		property: property,
 		rdfType:  rdfType,
@@ -37,11 +42,15 @@ func NewCastToRdfFnc(property string, rdfType string, isArray bool) *CastToRdfFn
 type CastToRdfTxtFnc struct {
 	property string
 	rdfType  string
-	isArray  bool
+	isArray  *bool
 }
+
 func (c *CastToRdfTxtFnc) String() string {
 	tag := ""
-	if c.isArray {
+	switch {
+	case c.isArray == nil:
+		tag = "[?]"
+	case *c.isArray:
 		tag = "[]"
 	}
 	return fmt.Sprintf("%s (%s%s)", c.property, tag, c.rdfType)
@@ -50,7 +59,7 @@ func (c *CastToRdfTxtFnc) Cast(v string) (any, error) {
 	return castToRdfTypeFromTxt(v, c.rdfType, c.isArray)
 }
 
-func NewCastToRdfTxtFnc(property string, rdfType string, isArray bool) *CastToRdfTxtFnc {
+func NewCastToRdfTxtFnc(property string, rdfType string, isArray *bool) *CastToRdfTxtFnc {
 	return &CastToRdfTxtFnc{
 		property: property,
 		rdfType:  rdfType,
@@ -77,7 +86,7 @@ func BuildCastToRdfFunctions(domainClass string, properties []string) ([]*CastTo
 	for i, property := range properties {
 		dp := dpMap[property]
 		if dp != nil {
-			result[i] = NewCastToRdfFnc(property, dp.Type, dp.AsArray)
+			result[i] = NewCastToRdfFnc(property, dp.Type, new(dp.AsArray))
 		}
 	}
 	return result, nil
@@ -95,7 +104,7 @@ func BuildCastToRdfTxtFunctions(domainClass string, properties []string) ([]*Cas
 	for i, property := range properties {
 		dp := dpMap[property]
 		if dp != nil {
-			result[i] = NewCastToRdfTxtFnc(property, dp.Type, dp.AsArray)
+			result[i] = NewCastToRdfTxtFnc(property, dp.Type, new(dp.AsArray))
 		}
 	}
 	return result, nil
@@ -105,8 +114,9 @@ func BuildCastToRdfTxtFunctions(domainClass string, properties []string) ([]*Cas
 // The returned value will be a slice []any if [isArray] is true.
 // If [inValue] is a slice and [isArray] is false, the first element of [inValue] is casted
 // to [rdfType] and returned.
+// if isArray is nil, return a slice if the input is a slice, otherwise return a single value
 // If [inValue] is an empty slice, empty string, or nil value, a nil value is returned.
-func castToRdfType(inValue any, rdfType string, isArray bool) (any, error) {
+func CastToRdfType(inValue any, rdfType string, isArray *bool) (any, error) {
 	if inValue == nil {
 		return nil, nil
 	}
@@ -117,29 +127,7 @@ func castToRdfType(inValue any, rdfType string, isArray bool) (any, error) {
 		return castToRdfTypeFromTxt(vv, rdfType, isArray)
 
 	case []any:
-		if len(vv) == 0 {
-			return nil, nil
-		}
-		if isArray {
-			result := make([]any, 0, len(vv))
-			for i := range vv {
-				if vv[i] != nil {
-					elm, err := castToRdfType(vv[i], rdfType, false)
-					if err != nil {
-						return nil, fmt.Errorf("while casting an array elm: %v", err)
-					}
-					result = append(result, elm)
-				}
-			}
-			return result, nil
-		}
-		// Not expecting an array, returning the first non nil elm
-		for i := range vv {
-			if vv[i] != nil {
-				return castToRdfType(vv[i], rdfType, false)
-			}
-		}
-		return nil, nil
+		return CastSliceToRdfType(vv, rdfType, isArray)
 
 	case int:
 		return castToRdfTypeFromInt(vv, rdfType, isArray)
@@ -167,12 +155,58 @@ func castToRdfType(inValue any, rdfType string, isArray bool) (any, error) {
 	return nil, fmt.Errorf("error: unknown type %T for casting as rdfType %s", inValue, rdfType)
 }
 
-func castToRdfTypeFromTxt(inValue string, rdfType string, isArray bool) (any, error) {
+func CastSliceToRdfType(inValue []any, rdfType string, isArray *bool) (any, error) {
 	if len(inValue) == 0 {
 		return nil, nil
 	}
-	if isArray {
-		// expecting a slice in inValue
+	switch {
+	case isArray == nil:
+		// if isArray is not specified, we will return a slice if the input is a slice, otherwise return a single value
+		result := make([]any, 0, len(inValue))
+		for i := range inValue {
+			if inValue[i] != nil {
+				elm, err := CastToRdfType(inValue[i], rdfType, new(false))
+				if err != nil {
+					return nil, fmt.Errorf("while casting an array elm: %v", err)
+				}
+				result = append(result, elm)
+			}
+		}
+		if len(result) == 1 {
+			return result[0], nil
+		}
+		return result, nil
+	case *isArray:
+		// expecting a slice in inValue, return a slice
+		result := make([]any, 0, len(inValue))
+		for i := range inValue {
+			if inValue[i] != nil {
+				elm, err := CastToRdfType(inValue[i], rdfType, new(false))
+				if err != nil {
+					return nil, fmt.Errorf("while casting an array elm: %v", err)
+				}
+				result = append(result, elm)
+			}
+		}
+		return result, nil
+	default:
+		// Not expecting an array, returning the first non nil elm
+		for i := range inValue {
+			if inValue[i] != nil {
+				return CastToRdfType(inValue[i], rdfType, new(false))
+			}
+		}
+		return nil, nil
+	}
+}
+
+func castToRdfTypeFromTxt(inValue string, rdfType string, isArray *bool) (any, error) {
+	inValue = strings.TrimSpace(inValue)
+	if len(inValue) == 0 {
+		return nil, nil
+	}
+	if isArray == nil || *isArray {
+		// may have a slice in inValue
 		if strings.HasPrefix(inValue, "{") && strings.HasSuffix(inValue, "}") {
 			if len(inValue) == 2 {
 				return nil, nil
@@ -182,7 +216,7 @@ func castToRdfTypeFromTxt(inValue string, rdfType string, isArray bool) (any, er
 			values := strings.Split(inValue, "\",\"")
 			results := make([]any, 0, len(values))
 			for i := range values {
-				v, err := castToRdfTypeFromTxt(values[i], rdfType, false)
+				v, err := castToRdfTypeFromTxt(values[i], rdfType, new(false))
 				if err != nil {
 					return nil, fmt.Errorf("while casting array value: %v", err)
 				}
@@ -192,32 +226,41 @@ func castToRdfTypeFromTxt(inValue string, rdfType string, isArray bool) (any, er
 			}
 			return results, nil
 		} else {
-			v, err := castToRdfTypeFromTxt(inValue, rdfType, false)
+			v, err := castToRdfTypeFromTxt(inValue, rdfType, new(false))
 			if err != nil {
 				return nil, fmt.Errorf("while casting array value(2): %v", err)
 			}
-			return []any{v}, nil
+			if isArray != nil && *isArray {
+				return []any{v}, nil
+			} else {
+				return v, nil
+			}
 		}
 	}
-
+	// Not expecting an array, return a single value
 	switch rdfType {
 	case "text", "string", "resource":
 		return inValue, nil
+
 	case "date":
 		dt, err := rdf.ParseDate(inValue)
 		if err != nil {
 			return nil, err
 		}
 		return *dt, nil
-	case "double":
-		return strconv.ParseFloat(strings.TrimSpace(inValue), 64)
-	case "int", "integer", "long":
-		return strconv.Atoi(strings.TrimSpace(inValue))
-	case "uint", "ulong":
-		v, err := strconv.ParseUint(inValue, 10, 64)
-		return uint(v), err
+
+	case "double", "float64":
+		return strconv.ParseFloat(inValue, 64)
+
+	case "int", "integer", "int64", "long":
+		return utils.String2Int(inValue)
+
+	case "uint", "uint64", "ulong":
+		return utils.String2UInt(inValue)
+
 	case "bool":
 		return rdf.ParseBool(inValue), nil
+	
 	case "datetime":
 		dt, err := rdf.ParseDatetime(inValue)
 		if err != nil {
@@ -225,7 +268,7 @@ func castToRdfTypeFromTxt(inValue string, rdfType string, isArray bool) (any, er
 		}
 		return *dt, nil
 	}
-	return nil, fmt.Errorf("error: unknown rdfTyoe %s for conversion from string", rdfType)
+	return nil, fmt.Errorf("error: unknown rdfType %s for conversion from string", rdfType)
 }
 
 // The reverse function to castToRdfTypeFromTxt
@@ -275,24 +318,29 @@ func encodeRdfTypeToTxt(inValue any) string {
 	}
 }
 
-func castToRdfTypeFromInt(inValue int, rdfType string, isArray bool) (any, error) {
+func castToRdfTypeFromInt(inValue int, rdfType string, isArrayP *bool) (any, error) {
+	var isArray bool
+	if isArrayP != nil {
+		isArray = *isArrayP
+	}
+
 	switch rdfType {
 	case "text", "string":
 		if isArray {
 			return []any{strconv.Itoa(inValue)}, nil
 		}
 		return strconv.Itoa(inValue), nil
-	case "double":
+	case "double", "float64":
 		if isArray {
 			return []any{float64(inValue)}, nil
 		}
 		return float64(inValue), nil
-	case "int", "integer", "long":
+	case "int", "integer", "int64", "long":
 		if isArray {
 			return []any{inValue}, nil
 		}
 		return inValue, nil
-	case "uint", "ulong":
+	case "uint", "uint64", "ulong":
 		if isArray {
 			return []any{uint(inValue)}, nil
 		}
@@ -312,24 +360,29 @@ func castToRdfTypeFromInt(inValue int, rdfType string, isArray bool) (any, error
 	return nil, fmt.Errorf("error: invalid rdfType (%s) for input value of type int", rdfType)
 }
 
-func castToRdfTypeFromUInt(inValue uint, rdfType string, isArray bool) (any, error) {
+func castToRdfTypeFromUInt(inValue uint, rdfType string, isArrayP *bool) (any, error) {
+	var isArray bool
+	if isArrayP != nil {
+		isArray = *isArrayP
+	}
+
 	switch rdfType {
 	case "text", "string":
 		if isArray {
 			return []any{strconv.FormatUint(uint64(inValue), 10)}, nil
 		}
 		return strconv.FormatUint(uint64(inValue), 10), nil
-	case "double":
+	case "double", "float64":
 		if isArray {
 			return []any{float64(inValue)}, nil
 		}
 		return float64(inValue), nil
-	case "int", "integer", "long":
+	case "int", "integer", "int64", "long":
 		if isArray {
 			return []any{int(inValue)}, nil
 		}
 		return int(inValue), nil
-	case "uint", "ulong":
+	case "uint", "uint64", "ulong":
 		if isArray {
 			return []any{inValue}, nil
 		}
@@ -349,19 +402,24 @@ func castToRdfTypeFromUInt(inValue uint, rdfType string, isArray bool) (any, err
 	return nil, fmt.Errorf("error: invalid rdfType (%s) for input value of type uint", rdfType)
 }
 
-func castToRdfTypeFromTime(inValue time.Time, rdfType string, isArray bool) (any, error) {
+func castToRdfTypeFromTime(inValue time.Time, rdfType string, isArrayP *bool) (any, error) {
+	var isArray bool
+	if isArrayP != nil {
+		isArray = *isArrayP
+	}
+
 	switch rdfType {
 	case "text", "string":
 		if isArray {
 			return []any{inValue.Format("2006-01-02T15:04:05")}, nil
 		}
 		return inValue.Format("2006-01-02T15:04:05"), nil
-	case "int", "integer", "long":
+	case "int", "integer", "int64", "long":
 		if isArray {
 			return []any{int(inValue.UnixMilli())}, nil
 		}
 		return int(inValue.UnixMilli()), nil
-	case "uint", "ulong":
+	case "uint", "uint64", "ulong":
 		if isArray {
 			return []any{uint(inValue.UnixMilli())}, nil
 		}
@@ -381,24 +439,29 @@ func castToRdfTypeFromTime(inValue time.Time, rdfType string, isArray bool) (any
 	return nil, fmt.Errorf("error: invalid rdfType (%s) for input value of type time.Time", rdfType)
 }
 
-func castToRdfTypeFromDouble(inValue float64, rdfType string, isArray bool) (any, error) {
+func castToRdfTypeFromDouble(inValue float64, rdfType string, isArrayP *bool) (any, error) {
+	var isArray bool
+	if isArrayP != nil {
+		isArray = *isArrayP
+	}
+
 	switch rdfType {
 	case "text", "string":
 		if isArray {
 			return []any{strconv.FormatFloat(inValue, 'f', -1, 64)}, nil
 		}
 		return strconv.FormatFloat(inValue, 'f', -1, 64), nil
-	case "double":
+	case "double", "float64":
 		if isArray {
 			return []any{inValue}, nil
 		}
 		return inValue, nil
-	case "int", "integer", "long":
+	case "int", "integer", "int64", "long":
 		if isArray {
 			return []any{int(inValue)}, nil
 		}
 		return int(inValue), nil
-	case "uint", "ulong":
+	case "uint", "uint64", "ulong":
 		if isArray {
 			return []any{uint(inValue)}, nil
 		}

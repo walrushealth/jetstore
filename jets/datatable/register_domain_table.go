@@ -194,7 +194,7 @@ func (ca *StatusUpdate) RegisterDbTableInputSource(schemaProviderJson string) er
 	var day any = env["$DAY"]
 	var tableName any = env["${TABLE_NAME}"]
 	var sessionId any = env["$SESSIONID"]
-	var sourcePeriodKey any
+	var sourcePeriodKey int
 	var err error
 
 	log.Printf("Registering db_table input source in input_registry: client=%s, org=%s, object_type=%s, file_key=%s, "+
@@ -225,6 +225,7 @@ func (ca *StatusUpdate) RegisterDbTableInputSource(schemaProviderJson string) er
 	if err != nil {
 		log.Println("error unable to register out tables to input_registry (ignored):", err)
 	} else {
+		log.Println("Registered input_registry entry for db_table with key:", inputRegistryKey, "for file_key:", fileKey, "and domain_key:", objType)
 		// Check if automated processes are ready to start
 		// log.Println("*** Register Domain Table w/ inputRegistryKey:", inputRegistryKey, "object_type", (*objectTypes)[j])
 		ctx := NewDataTableContext(ca.Dbpool, ca.UsingSshTunnel, ca.UsingSshTunnel, nil, nil)
@@ -232,24 +233,10 @@ func (ca *StatusUpdate) RegisterDbTableInputSource(schemaProviderJson string) er
 		if err != nil {
 			return fmt.Errorf("error creating jwt token: %v", err)
 		}
-		if sourcePeriodKey == nil {
-			log.Printf("%s Warning: source period not found for year %v month %v day %v while registering db_table input source. Registered input_registry entry with key: %d for file_key: %s and domain_key: %s, but will not start any pipeline since source_period_key is nil",
-				sessionId, year, month, day, inputRegistryKey, fileKey, objType)
-			sourcePeriodKey = 0
-		} else {
-			_, ok := sourcePeriodKey.(int)
-			if !ok {
-				log.Printf("%s Warning: source period key is not an int for year %v month %v day %v while registering db_table input source. Registered input_registry entry with key: %d for file_key: %s and domain_key: %s, but will not start any pipeline since source_period_key is not an int",
-					sessionId, year, month, day, inputRegistryKey, fileKey, objType)
-				sourcePeriodKey = 0
-			}
-		}
-		err = ctx.StartPipelinesForInputRegistryV2(inputRegistryKey, sourcePeriodKey.(int), sessionId.(string), client.(string),
+		err = ctx.StartPipelinesForInputRegistryV2(inputRegistryKey, sourcePeriodKey, sessionId.(string), client.(string),
 			objType.(string), fileKey.(string), token)
 		if err != nil {
-			log.Println("while calling StartPipelinesForInputRegistryV2 (ignored):", err)
-		} else {
-			log.Println("Registered input_registry entry for db_table with key:", inputRegistryKey, "for file_key:", fileKey, "and domain_key:", objType)
+			log.Println("WARNING while calling StartPipelinesForInputRegistryV2 (ignored):", err)
 		}
 	}
 

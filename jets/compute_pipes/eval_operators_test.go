@@ -5,6 +5,65 @@ import (
 	"time"
 )
 
+func TestToBool(t *testing.T) {
+	if !ToBool(true) {
+		t.Errorf("error: expecting true")
+	}
+	if ToBool(false) {
+		t.Errorf("error: expecting false")
+	}
+	if !ToBool("true") {
+		t.Errorf("error: expecting true")
+	}
+	if ToBool("false") {
+		t.Errorf("error: expecting false")
+	}
+	if !ToBool("TRUE") {
+		t.Errorf("error: expecting true")
+	}
+	if ToBool("FALSE") {
+		t.Errorf("error: expecting false")
+	}
+	if !ToBool("1.1") {
+		t.Errorf("error: expecting true")
+	}
+	if ToBool("0") {
+		t.Errorf("error: expecting false")
+	}
+	if !ToBool("0.7") {
+		t.Errorf("error: expecting true")
+	}
+	if ToBool("") {
+		t.Errorf("error: expecting false")
+	}
+	if ToBool(0) {
+		t.Errorf("error: expecting false")
+	}
+	if !ToBool(1) {
+		t.Errorf("error: expecting true")
+	}
+	if !ToBool(1.5) {
+		t.Errorf("error: expecting true")
+	}
+	if ToBool(0.0) {
+		t.Errorf("error: expecting false")
+	}
+	if !ToBool(0.7) {
+		t.Errorf("error: expecting true")
+	}
+	if ToBool(nil) {
+		t.Errorf("error: expecting false")
+	}
+	if ToBool([]int{}) {
+		t.Errorf("error: expecting false")
+	}
+	if ToBool([]int{1, 2}) {
+		t.Errorf("error: expecting false")
+	}
+	if ToBool(map[string]int{}) {
+		t.Errorf("error: expecting false")
+	}
+}
 func TestOpEqual(t *testing.T) {
 	oper := &opEqual{}
 	v, err := oper.Eval(1, 1)
@@ -43,6 +102,79 @@ func TestOpEqual(t *testing.T) {
 		t.Errorf("error: expecting true, got %v", v)
 	}
 	v, err = oper.Eval("1", float64(1))
+	if err != nil {
+		t.Errorf("error: expecting nil")
+	}
+	if !ToBool(v) {
+		t.Errorf("error: expecting true, got %v", v)
+	}
+}
+func TestOpNotEqual(t *testing.T) {
+	oper := &opNotEqual{}
+	v, err := oper.Eval(1, 1)
+	if err != nil {
+		t.Errorf("error: expecting nil")
+	}
+	if ToBool(v) {
+		t.Errorf("error: expecting false")
+	}
+	v, err = oper.Eval(1, 2)
+	if err != nil {
+		t.Errorf("error: expecting nil")
+	}
+	if !ToBool(v) {
+		t.Errorf("error: expecting true")
+	}
+	v, err = oper.Eval(1, "1.00")
+	if err != nil {
+		t.Errorf("error: expecting nil")
+	}
+	if ToBool(v) {
+		t.Errorf("error: expecting false, got %v", v)
+	}
+	v, err = oper.Eval("1.00", 1)
+	if err != nil {
+		t.Errorf("error: expecting nil")
+	}
+	if ToBool(v) {
+		t.Errorf("error: expecting false, got %v", v)
+	}
+	v, err = oper.Eval("1.00", float64(1))
+	if err != nil {
+		t.Errorf("error: expecting nil")
+	}
+	if ToBool(v) {
+		t.Errorf("error: expecting false, got %v", v)
+	}
+	v, err = oper.Eval("1", float64(1))
+	if err != nil {
+		t.Errorf("error: expecting nil")
+	}
+	if ToBool(v) {
+		t.Errorf("error: expecting false, got %v", v)
+	}
+	v, err = oper.Eval("-1", float64(1))
+	if err != nil {
+		t.Errorf("error: expecting nil")
+	}
+	if !ToBool(v) {
+		t.Errorf("error: expecting true, got %v", v)
+	}
+	v, err = oper.Eval("1", float64(-1))
+	if err != nil {
+		t.Errorf("error: expecting nil")
+	}
+	if !ToBool(v) {
+		t.Errorf("error: expecting true, got %v", v)
+	}
+	v, err = oper.Eval(float64(1), "-1")
+	if err != nil {
+		t.Errorf("error: expecting nil")
+	}
+	if !ToBool(v) {
+		t.Errorf("error: expecting true, got %v", v)
+	}
+	v, err = oper.Eval(float64(-1), "1")
 	if err != nil {
 		t.Errorf("error: expecting nil")
 	}

@@ -12,7 +12,7 @@ import (
 	"github.com/artisoft-io/jetstore/jets/datatable"
 	"github.com/artisoft-io/jetstore/jets/schema"
 	"github.com/artisoft-io/jetstore/jets/utils"
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func (args *StartComputePipesArgs) StartShardingComputePipes(ctx context.Context,
@@ -255,7 +255,7 @@ func (args *StartComputePipesArgs) StartShardingComputePipes(ctx context.Context
 	}
 
 	// Set the nbr of concurrent map tasks
-	result.CpipesMaxConcurrency = GetMaxConcurrency(shardResult.nbrShardingNodes, cpipesStartup.CpConfig.ClusterConfig.DefaultMaxConcurrency)
+	result.CpipesMaxConcurrency = GetMaxConcurrency(shardResult.nbrShardingNodes, shardResult.clusterSpec.MaxConcurrency)
 
 	// //*TODO Determine if using esc tasks for this stepId (sharding step)
 	// result.UseECSReducingTask, err = cpipesStartup.EvalUseEcsTask(stepId)
@@ -337,7 +337,7 @@ func (args *StartComputePipesArgs) StartShardingComputePipes(ctx context.Context
 			ShardingInfo:          shardResult.clusterShardingInfo,
 			ShardOffset:           cpipesStartup.CpConfig.ClusterConfig.ShardOffset,
 			S3WorkerPoolSize:      shardResult.clusterSpec.S3WorkerPoolSize,
-			DefaultMaxConcurrency: cpipesStartup.CpConfig.ClusterConfig.DefaultMaxConcurrency,
+			DefaultMaxConcurrency: shardResult.clusterSpec.MaxConcurrency,
 			IsDebugMode:           cpipesStartup.CpConfig.ClusterConfig.IsDebugMode,
 		},
 		MetricsConfig:   cpipesStartup.CpConfig.MetricsConfig,
@@ -406,7 +406,7 @@ func (args *StartComputePipesArgs) StartShardingComputePipes(ctx context.Context
 		}
 		// ignore returned err
 		datatable.DoNotifyApiGateway(args.FileKey, apiEndpoint, apiEndpointJson,
-			notificationTemplate, customFileKeys, "", cpipesStartup.EnvSettings)
+			notificationTemplate, customFileKeys, "", mainInputSchemaProvider.Env)
 	}
 
 	return result, mainInputSchemaProvider, nil

@@ -4,30 +4,62 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/artisoft-io/jetstore/jets/date_utils"
+	"github.com/artisoft-io/jetstore/jets/jetrules/rdf"
 	"github.com/google/uuid"
 )
 
+// Operator distance_months() -- binary operator that calculates the distance in months between two dates.
+// semantics: (from_date distance_months to_date) returns the number of months between from_date and to_date.
+// May return negative value if from_date is after to_date. If either argument is null, returns null.
+// Accept string or date or int (seconds since epoch) as arguments. If string, will attempt to parse as date, if fails, will return error.
 type opDMonths struct{}
 
 func (op *opDMonths) Eval(lhs any, rhs any) (any, error) {
 	if lhs == nil || rhs == nil {
 		return nil, nil
 	}
-	switch lhsv := lhs.(type) {
+	var lhsDate, rhsDate time.Time
 
-	case time.Time:
-		switch rhsv := rhs.(type) {
-		case time.Time:
-			v := (lhsv.Year()-rhsv.Year())*12 + int(lhsv.Month()) - int(rhsv.Month())
-			if v > 0 {
-				return v, nil
-			}
-			return -v, nil
+	switch lhsv := lhs.(type) {
+	case string:
+		// convert to date if possible
+		lhsv = strings.Trim(lhsv, "\"")
+		d, err := rdf.ParseDate(lhsv)
+		if err != nil {
+			return nil, fmt.Errorf("opDMonths lhs string, string not a date: %v", err)
 		}
+		lhsDate = *d
+	case time.Time:
+		lhsDate = lhsv
+	case int:
+		lhsDate = time.Unix(int64(lhsv), 0)
+	default:
+		return nil, fmt.Errorf("opDMonths incompatible types for lhs: '%T', rejected", lhs)
 	}
-	return nil, fmt.Errorf("opDMonths incompatible types, rejected")
+
+	switch rhsv := rhs.(type) {
+	case string:
+		// convert to date if possible
+		rhsv = strings.Trim(rhsv, "\"")
+		d, err := rdf.ParseDate(rhsv)
+		if err != nil {
+			return nil, fmt.Errorf("opDMonths rhs string, string not a date: %v", err)
+		}
+		rhsDate = *d
+	case time.Time:
+		rhsDate = rhsv
+	case int:
+		rhsDate = time.Unix(int64(rhsv), 0)
+	default:
+		return nil, fmt.Errorf("opDMonths incompatible types for rhs: '%T', rejected", rhs)
+	}
+
+	v := (rhsDate.Year()-lhsDate.Year())*12 + int(rhsDate.Month()) - int(lhsDate.Month())
+	return v, nil
 }
 
 type opApplyFormat struct{}
@@ -41,6 +73,10 @@ func (op *opApplyFormat) Eval(lhs any, rhs any) (any, error) {
 		switch rhsv := rhs.(type) {
 		case string:
 			switch strings.Count(rhsv, "%") {
+			case 0:
+				// Convert java date format if used
+				writeFormat := date_utils.FromJavaDateFormat(rhsv, false)
+				return lhsv.Format(writeFormat), nil
 			case 3:
 				return fmt.Sprintf(rhsv, lhsv.Year(), int(lhsv.Month()), lhsv.Day()), nil
 			default:
@@ -63,6 +99,28 @@ func (op *opApplyFormat) Eval(lhs any, rhs any) (any, error) {
 type opApplyRegex struct {
 	re *regexp.Regexp
 }
+var regexCache = make(map[string]*regexp.Regexp)
+var regexCacheMx sync.Mutex
+func getCompiledRegex(pattern string) (*regexp.Regexp, error) {
+	value := regexCache[pattern]
+	if value != nil {
+		return value, nil
+	}
+	regexCacheMx.Lock()
+	defer regexCacheMx.Unlock()
+	value = regexCache[pattern]
+	if value != nil {
+		return value, nil
+	}
+	fmt.Println("Compiling:", pattern)
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		fmt.Printf("while compiling regex '%s': %v", pattern, err)
+		return nil, fmt.Errorf("while compiling regex '%s': %v", pattern, err)
+	}
+	regexCache[pattern] = re
+	return re, nil
+}
 
 func (op *opApplyRegex) Eval(lhs any, rhs any) (any, error) {
 	if lhs == nil || rhs == nil {
@@ -74,10 +132,9 @@ func (op *opApplyRegex) Eval(lhs any, rhs any) (any, error) {
 		switch rhsv := rhs.(type) {
 		case string:
 			if op.re == nil {
-				// fmt.Println("Compiling:", rhsv)
-				op.re, err = regexp.Compile(rhsv)
+				op.re, err = getCompiledRegex(rhsv)
 				if err != nil {
-					return nil, fmt.Errorf("while compiling regex '%s': %v", rhsv, err)
+					return nil, err
 				}
 			}
 			// fmt.Println("apply regex on:", lhsv)
@@ -169,12 +226,20 @@ func (op *opNewUUID) Eval(_ any, _ any) (any, error) {
 }
 
 // Operator IN
-type opIn struct{}
+type opIn struct{
+	noCase bool
+}
 
 func (op *opIn) Eval(lhs any, rhs any) (any, error) {
 	values, ok := rhs.(map[any]bool)
 	if !ok {
-		return 0, fmt.Errorf("error: operator IN is expecting static_list as rhs argument")
+		return 0, fmt.Errorf("error: operator IN / IN_NO_CASE is expecting static_list as rhs argument")
+	}
+	if op.noCase {
+		switch lhsv := lhs.(type) {
+		case string:
+			lhs = strings.ToUpper(lhsv)
+		}
 	}
 	v := 0
 	if values[lhs] {

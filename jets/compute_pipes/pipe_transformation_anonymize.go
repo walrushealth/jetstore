@@ -95,6 +95,7 @@ nextAction:
 		case string:
 			upperValue := strings.ToUpper(vv)
 			if upperValue == "NULL" {
+				(*input)[action.inputColumn] = nil
 				continue nextAction
 			}
 			if ctx.blankMarkers != nil {
@@ -103,6 +104,7 @@ nextAction:
 					txt = &vv
 				}
 				if slices.Contains(ctx.blankMarkers.Markers, *txt) {
+					(*input)[action.inputColumn] = nil
 					continue nextAction
 				}
 			}
@@ -144,6 +146,10 @@ nextAction:
 					hashedValue, ok = (*lookupRow)[0].(string)
 					if !ok {
 						return fmt.Errorf("error: expecting string for de-identification anonymized value, got %v", (*lookupRow)[0])
+					}
+					// special rule: when data_classification is 'ssn', check if input value contains dashes, if not, remove dashes from the hashed value before output
+					if action.dataClassification == "ssn" && !strings.Contains(inputStr, "-") {
+						hashedValue = strings.ReplaceAll(hashedValue, "-", "")
 					}
 				case len(action.deidFunctionName) > 0:
 					// Use the de-identification function
@@ -226,6 +232,8 @@ nextAction:
 					if ctx.setAllDatesToJan1 {
 						month = time.January
 					}
+				case "date_to_jan1":
+					month = time.January
 				}
 
 				anonymizeDate := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
@@ -267,12 +275,18 @@ nextAction:
 		switch vv := value.(type) {
 		case string:
 			if strings.ToUpper(vv) == "NULL" {
+				(*input)[icol] = nil
 				continue
 			}
 			inputStr = vv
 		default:
 			inputStr = fmt.Sprintf("%v", vv)
 		}
+		if slices.Contains(ctx.blankMarkers.Markers, inputStr) {
+			(*input)[icol] = nil
+			continue
+		}
+
 		ctx.hasher.Reset()
 		ctx.hasher.Write([]byte(inputStr))
 		hashedValue = fmt.Sprintf("%016x", ctx.hasher.Sum64())
@@ -477,6 +491,13 @@ func (ctx *BuilderContext) NewAnonymizeTransformationPipe(source *InputChannel, 
 						if ok {
 							// It's a deid function, vaidate the function and adjust column width if needed
 							switch deidFunctionName {
+							case "numeric_hashed_value":
+							case "alphanumeric_hashed_value":
+								// Determine the width to adjust for fixed-width files
+								if newWidth != nil {
+									newWidth[name] = 16
+								}
+								deidFunctionName = "hashed_value"
 							case "hashed_value":
 								// Determine the width to adjust for fixed-width files
 								if newWidth != nil {

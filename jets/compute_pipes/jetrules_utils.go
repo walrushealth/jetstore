@@ -13,7 +13,7 @@ import (
 
 	"github.com/artisoft-io/jetstore/jets/jetrules/rete"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Utility functions for jetrules transformation pipes operator
@@ -22,7 +22,7 @@ var workspaceControl *rete.WorkspaceControl
 var workspaceControlMx sync.Mutex
 
 // ruleEngineCache is a map mainRuleName -> *ReteMetaStoreFactory
-var ruleEngineCache *sync.Map = new(sync.Map)
+// var ruleEngineCache *sync.Map = new(sync.Map) // not used
 var inputMappingCache *sync.Map = new(sync.Map)
 
 var dataPropertyInfoMap map[string]*rete.DataPropertyNode
@@ -34,20 +34,26 @@ var domainTablesMx sync.Mutex
 var domainClassesMap map[string]*rete.ClassNode
 var domainClassesMx sync.Mutex
 
-var ruleEngineConfig map[string]string
+// ruleEngineConfig is a map of config properties defined in the jetrules .config.json file for a given mainRule file
+// this is endexed by main rule file
+var ruleEngineConfig map[string]map[string]string
 var ruleEngineConfigMx sync.Mutex
+
+func init() {
+	ruleEngineConfig = make(map[string]map[string]string)
+}
 
 // Function to clear local caches, needed for when workspace have been updated and need to force the lambda to
 // reload the worspace metadata from jetstore db
 // Note: This must be called before starting goroutines as it is not thread safe.
 func ClearJetrulesCaches() {
 	workspaceControl = nil
-	ruleEngineCache = new(sync.Map)
+	// ruleEngineCache = new(sync.Map)
 	inputMappingCache = new(sync.Map)
 	dataPropertyInfoMap = nil
 	domainTablesMap = nil
 	domainClassesMap = nil
-	ruleEngineConfig = nil
+	ruleEngineConfig = make(map[string]map[string]string)
 }
 
 // pre-loading jetrules caches
@@ -239,40 +245,41 @@ func ExtractRdfNodeInfoJson(e any) (value, rdfType string, err error) {
 	}
 }
 
-// Function to get the JetRuleEngine for a rule process
-func GetJetRuleEngine(reFactory JetRulesFactory, dbpool *pgxpool.Pool, processName string, isDebug bool) (
-	ruleEngine JetRuleEngine, err error) {
+// This is not used
+// // Function to get the JetRuleEngine for a rule process
+// func GetJetRuleEngine(reFactory JetRulesFactory, dbpool *pgxpool.Pool, processName string, isDebug bool) (
+// 	ruleEngine JetRuleEngine, err error) {
 
-	// Get the Rete MetaStore for the mainRules
-	reHdle, _ := ruleEngineCache.Load(processName)
-	if reHdle == nil {
-		// Get the jetrule process info -- the mainRule name or ruleSequence name
-		var mainRules string
-		stmt := `SELECT	pc.main_rules FROM jetsapi.process_config pc WHERE pc.process_name = $1`
-		err := dbpool.QueryRow(context.Background(), stmt, processName).Scan(&mainRules)
-		if err != nil {
-			return nil,
-				fmt.Errorf("quering main rule file name for process %s from jetsapi.process_config failed: %v",
-					processName, err)
-		}
-		if len(mainRules) == 0 {
-			return nil, fmt.Errorf("error: main rule file name is empty for process %s", processName)
-		}
-		log.Printf("Rule engine for ruleset '%s' for process '%s' not loaded, loading from local workspace",
-			mainRules, processName)
-		ruleEngine, err = reFactory.NewJetRuleEngine(dbpool, mainRules, isDebug)
-		if err != nil {
-			return nil,
-				fmt.Errorf("while loading ruleset '%s' for process '%s' from local workspace via NewJetRuleEngine: %v",
-					mainRules, processName, err)
-		}
-		//*** concurrent read/write og resourceMap issue
-		// ruleEngineCache.Store(processName, ruleEngine)
-	} else {
-		ruleEngine = reHdle.(JetRuleEngine)
-	}
-	return
-}
+// 	// Get the Rete MetaStore for the mainRules
+// 	reHdle, _ := ruleEngineCache.Load(processName)
+// 	if reHdle == nil {
+// 		// Get the jetrule process info -- the mainRule name or ruleSequence name
+// 		var mainRules string
+// 		stmt := `SELECT	pc.main_rules FROM jetsapi.process_config pc WHERE pc.process_name = $1`
+// 		err := dbpool.QueryRow(context.Background(), stmt, processName).Scan(&mainRules)
+// 		if err != nil {
+// 			return nil,
+// 				fmt.Errorf("quering main rule file name for process %s from jetsapi.process_config failed: %v",
+// 					processName, err)
+// 		}
+// 		if len(mainRules) == 0 {
+// 			return nil, fmt.Errorf("error: main rule file name is empty for process %s", processName)
+// 		}
+// 		log.Printf("Rule engine for ruleset '%s' for process '%s' not loaded, loading from local workspace",
+// 			mainRules, processName)
+// 		ruleEngine, err = reFactory.NewJetRuleEngine(dbpool, mainRules, isDebug)
+// 		if err != nil {
+// 			return nil,
+// 				fmt.Errorf("while loading ruleset '%s' for process '%s' from local workspace via NewJetRuleEngine: %v",
+// 					mainRules, processName, err)
+// 		}
+// 		//*** concurrent read/write og resourceMap issue
+// 		// ruleEngineCache.Store(processName, ruleEngine)
+// 	} else {
+// 		ruleEngine = reHdle.(JetRuleEngine)
+// 	}
+// 	return
+// }
 
 type RuleEngineConfig struct {
 	MainRuleFile   string            `json:"main_rule_file_name,omitempty"`
@@ -280,30 +287,43 @@ type RuleEngineConfig struct {
 }
 
 // Function to get domain classes info from the local workspace
+func loadRuleEngineConfig(mainRuleFile string) (map[string]string, error) {
+	ruleConfig := &RuleEngineConfig{}
+	ruleEngineConfigMx.Lock()
+	defer ruleEngineConfigMx.Unlock()
+	config, ok := ruleEngineConfig[mainRuleFile]
+	if ok {
+		return config, nil
+	}
+	fpath := fmt.Sprintf("%s/%s/build/%s.config.json", workspaceHome, wsPrefix, strings.TrimSuffix(mainRuleFile, ".jr"))
+	log.Println("Reading Rule Engine config definitions from:", fpath)
+	file, err := os.ReadFile(fpath)
+	if err != nil {
+		err = fmt.Errorf("while reading config.json file (GetRuleEngineConfig):%v", err)
+		log.Println(err)
+		return nil, err
+	}
+	err = json.Unmarshal(file, ruleConfig)
+	if err != nil {
+		err = fmt.Errorf("while unmarshaling config.json (GetRuleEngineConfig):%v", err)
+		log.Println(err)
+		return nil, err
+	}
+	ruleEngineConfig[mainRuleFile] = ruleConfig.JetStoreConfig
+	return ruleConfig.JetStoreConfig, nil
+}
+
+// Function to get domain classes info from the local workspace
 func GetRuleEngineConfig(mainRuleFile, property string) (string, error) {
-	if ruleEngineConfig == nil {
-		config := &RuleEngineConfig{}
-		ruleEngineConfigMx.Lock()
-		defer ruleEngineConfigMx.Unlock()
-		if ruleEngineConfig == nil {
-			fpath := fmt.Sprintf("%s/%s/build/%s.config.json", workspaceHome, wsPrefix, strings.TrimSuffix(mainRuleFile, ".jr"))
-			log.Println("Reading Rule Engine config definitions from:", fpath)
-			file, err := os.ReadFile(fpath)
-			if err != nil {
-				err = fmt.Errorf("while reading config.json file (GetRuleEngineConfig):%v", err)
-				log.Println(err)
-				return "", err
-			}
-			err = json.Unmarshal(file, config)
-			if err != nil {
-				err = fmt.Errorf("while unmarshaling config.json (GetRuleEngineConfig):%v", err)
-				log.Println(err)
-				return "", err
-			}
-			ruleEngineConfig = config.JetStoreConfig
+	config, ok := ruleEngineConfig[mainRuleFile]
+	if !ok {
+		var err error
+		config, err = loadRuleEngineConfig(mainRuleFile)
+		if err != nil {
+			return "", err
 		}
 	}
-	return ruleEngineConfig[property], nil
+	return config[property], nil
 }
 
 // Function to get domain classes info from the local workspace

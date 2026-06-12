@@ -12,7 +12,7 @@ import (
 	"github.com/artisoft-io/jetstore/jets/awsi"
 	"github.com/artisoft-io/jetstore/jets/compute_pipes"
 	"github.com/artisoft-io/jetstore/jets/dbutils"
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Run report and save it as parquet file locally and then copy it to s3
@@ -52,6 +52,7 @@ func (ca *CommandArguments) DoParquetReport(dbpool *pgxpool.Pool, tempDir string
 		columName := string(fd[inPos].Name)
 		// fmt.Println("*** ColumnName",columName,"oid",oid)
 		// skipping arrays and unknown data type
+		//TODO Add json and jsonb support in parquet writer and then remove the skipping of those data type
 		if !dbutils.IsArrayFromOID(oid) {
 			switch datatype := dbutils.DataTypeFromOID(oid); datatype {
 			case "string", "time":

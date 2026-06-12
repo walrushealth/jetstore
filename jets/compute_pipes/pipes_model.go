@@ -95,7 +95,7 @@ func (cp *ComputePipesConfig) GetStepName(stepId int) string {
 }
 
 // Cluster configuration
-// [DefaultMaxConcurrency] is to override the env var MAX_CONCURRENCY
+// [DefaultMaxConcurrency] is to override the env var TASK_MAX_CONCURRENCY
 // [nbrPartitions] is specified at ClusterShardingSpec level otherwise at the
 // ClusterSpec level. [nbrPartitions] is determined by the nbr of sharding nodes,
 // capped by MaxNbrPartitions.
@@ -568,6 +568,11 @@ type MapRecordSpec struct {
 // DistinctValuesWhenLessThanCount is the threshold to list distinct values.
 // PadShortRowsWithNulls indicates to pad short rows with nulls to match row length.
 // ColumnNameToken is used to classify columns based on their name.
+// Note: ColumnNameToken can be specified in env var ${COLUMN_NAME_TOKEN_JSON} as an
+// alternative to the configuration document, to provide more flexibility and avoid
+// hardcoding in the configuration document.
+// When both present, the configuration document is merged with the env var unless
+// the env var ${OVERRIDE_COLUMN_NAME_TOKEN} is set to 1.
 // EntityHints provide hints for entity recognition.
 // RegexTokens specify regex patterns to identify classification tokens.
 // LookupTokens specify lookup tables to identify classification tokens.
@@ -599,9 +604,14 @@ type ColumnNameTokenNode struct {
 // ColumnNameLookupNode specifies the column name to classification token
 // Name: classification token name
 // ColumnNames: list of column names that map to the classification token
+// ColumnPos: list of column positions (0 based) that map to the classification token
+// ColumnNameFragments: list of column name fragments, if a column name contains
+// any of the fragments, it maps to the classification token.
+// ColumnNames takes precedence over ColumnPos. Both can be empty if ColumnNameFragments is used.
 type ColumnNameLookupNode struct {
 	Name                string   `json:"name"`
 	ColumnNames         []string `json:"column_names,omitempty"`
+	ColumnPos           []int    `json:"column_pos,omitempty"`
 	ColumnNameFragments []string `json:"column_name_fragments,omitempty"`
 }
 
@@ -1041,7 +1051,7 @@ type TargetColumnsLookupSpec struct {
 
 type TransformationColumnSpec struct {
 	// Type range: select, multi_select, value, eval, map, hash
-	// count, distinct_count, sum, min, avrg, case,
+	// count, distinct_count, sum, min, max, avrg, case,
 	// map_reduce, lookup
 	// AsRdfType applies to expr with non-aggragate operators: select, multi_select, value
 	// AsRdfType applies to expr with aggragate operators: min, max, sum, avrg
@@ -1141,13 +1151,13 @@ type MapExpression struct {
 
 type ExpressionNode struct {
 	// Name is for the special case CaseEnvExpression
-	// Type is for leaf nodes: select, value, expr_proxy
+	// Type is for leaf nodes: select, value, expr_proxy, function
 	// Expr is for leaf nodes, the expression to evaluate:
 	// - for Type: select, it is the column name to select or substitute with env var
 	//   substitution if it contains the char '$'.
 	// - for Type: value, it is the value to use or substitute with env var
 	//   substitution if it contains the char '$'.
-	// ExprPos is for leaf nodes for Type select, it is the column position to select,
+	// ExprPos is for leaf nodes for Type select, it is the 0-based column position to select,
 	// it is an alternative to Expr which is the column name.
 	// ExprList is for leaf nodes with multiple values, used for the `in`` operator.
 	// MaxEnvVarSubstitution indicates how many loop of env substitution to do for
@@ -1158,18 +1168,23 @@ type ExpressionNode struct {
 	// - ExprEnvVarProxy: the expression is specified by an env var, the value of
 	//   the env var is the actual expression as a json string to evaluate.
 	// (more to come)
-	Name                  string          `json:"name,omitempty"`
-	Type                  string          `json:"type,omitempty"`
-	Expr                  string          `json:"expr,omitempty"`
-	ExprPos               *int            `json:"expr_pos,omitempty"`
-	ExprList              []string        `json:"expr_list,omitempty"`
-	MaxEnvVarSubstitution int             `json:"max_env_var_substitution,omitzero"`
-	AsRdfType             string          `json:"as_rdf_type,omitempty"`
-	Arg                   *ExpressionNode `json:"arg,omitzero"`
-	Lhs                   *ExpressionNode `json:"lhs,omitzero"`
-	Op                    string          `json:"op,omitempty"`
-	Rhs                   *ExpressionNode `json:"rhs,omitzero"`
-	ExprEnvVarProxy       string          `json:"expr_env_var_proxy,omitempty"`
+	// Special case for type: function, it indicates that the expression is a function call,
+	// the actual function is specified by Expr, and the arguments are specified by Farg.
+	// Default value to use when the evaluation returns error
+	Name                  string           `json:"name,omitempty"`
+	Type                  string           `json:"type,omitempty"`
+	Expr                  string           `json:"expr,omitempty"`
+	ExprPos               *int             `json:"expr_pos,omitempty"`
+	ExprList              []string         `json:"expr_list,omitempty"`
+	MaxEnvVarSubstitution int              `json:"max_env_var_substitution,omitzero"`
+	AsRdfType             string           `json:"as_rdf_type,omitempty"`
+	Arg                   *ExpressionNode  `json:"arg,omitzero"`
+	Lhs                   *ExpressionNode  `json:"lhs,omitzero"`
+	Op                    string           `json:"op,omitempty"`
+	Rhs                   *ExpressionNode  `json:"rhs,omitzero"`
+	ExprEnvVarProxy       string           `json:"expr_env_var_proxy,omitempty"`
+	Farg                  []ExpressionNode `json:"function_arguments,omitzero"`
+	Default               *ExpressionNode  `json:"default,omitzero"`
 }
 
 type CaseExpression struct {

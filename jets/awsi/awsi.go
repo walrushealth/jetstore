@@ -15,11 +15,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/artisoft-io/jetstore/jets/utils"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	s3Types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	"github.com/prozz/aws-embedded-metrics-golang/emf"
@@ -106,6 +109,30 @@ type SecretManagerClient struct {
 	smClient *secretsmanager.Client
 }
 
+// sanitizeSecretId validates and neutralizes an externally-provided AWS Secrets
+// Manager secret identifier to mitigate resource injection (CWE-99). The
+// identifier may be either a secret name or an ARN. It rejects empty values,
+// control characters, and any character outside the set allowed by AWS for
+// secret names and ARNs (alphanumeric and the characters /_+=.@-:).
+func sanitizeSecretId(secret string) (string, error) {
+	if secret == "" {
+		return "", fmt.Errorf("invalid secret id: empty value")
+	}
+	for _, r := range secret {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '/', r == '_', r == '+', r == '=',
+			r == '.', r == '@', r == '-', r == ':':
+			// allowed
+		default:
+			return "", fmt.Errorf("invalid secret id: contains disallowed character")
+		}
+	}
+	return secret, nil
+}
+
 func NewSecretManagerClient() (*SecretManagerClient, error) {
 	cfg, err := GetConfig()
 	if err != nil {
@@ -119,6 +146,10 @@ func NewSecretManagerClient() (*SecretManagerClient, error) {
 }
 
 func (c *SecretManagerClient) GetSecretValue(secret, label string) (string, error) {
+	secret, err := sanitizeSecretId(secret)
+	if err != nil {
+		return "", err
+	}
 	input := &secretsmanager.GetSecretValueInput{
 		SecretId:     aws.String(secret),
 		VersionStage: aws.String(label), //  AWSCURRENT, AWSPREVIOUS, AWSPENDING
@@ -148,6 +179,10 @@ func (c *SecretManagerClient) GetRandomPassword(excludeCharacters string, length
 }
 
 func (c *SecretManagerClient) DescribeSecret(secret string) (*secretsmanager.DescribeSecretOutput, error) {
+	secret, err := sanitizeSecretId(secret)
+	if err != nil {
+		return nil, err
+	}
 	input := &secretsmanager.DescribeSecretInput{
 		SecretId: aws.String(secret),
 	}
@@ -159,6 +194,10 @@ func (c *SecretManagerClient) DescribeSecret(secret string) (*secretsmanager.Des
 }
 
 func (c *SecretManagerClient) GetCurrentSecretValue(secret string) (string, error) {
+	secret, err := sanitizeSecretId(secret)
+	if err != nil {
+		return "", err
+	}
 	input := &secretsmanager.GetSecretValueInput{
 		SecretId:     aws.String(secret),
 		VersionStage: aws.String("AWSCURRENT"), // VersionStage defaults to AWSCURRENT if unspecified
@@ -176,13 +215,17 @@ func (c *SecretManagerClient) GetCurrentSecretValue(secret string) (string, erro
 }
 
 func (c *SecretManagerClient) PutSecretValue(secret, value, stageLabel, clientRequestToken string) error {
+	secret, err := sanitizeSecretId(secret)
+	if err != nil {
+		return err
+	}
 	input := &secretsmanager.PutSecretValueInput{
 		SecretId:           aws.String(secret),
 		ClientRequestToken: aws.String(clientRequestToken),
 		SecretString:       aws.String(value),
 		VersionStages:      []string{stageLabel},
 	}
-	_, err := c.smClient.PutSecretValue(context.TODO(), input)
+	_, err = c.smClient.PutSecretValue(context.TODO(), input)
 	return err
 }
 
@@ -273,8 +316,8 @@ func GetObjectSize(s3Client *s3.Client, s3bucket string, key string) (int64, err
 	params := &s3.GetObjectAttributesInput{
 		Bucket: aws.String(s3bucket),
 		Key:    aws.String(key),
-		ObjectAttributes: []types.ObjectAttributes{
-			types.ObjectAttributesObjectSize,
+		ObjectAttributes: []s3Types.ObjectAttributes{
+			s3Types.ObjectAttributesObjectSize,
 		},
 	}
 	sleepDuration := 500 * time.Millisecond
@@ -309,17 +352,28 @@ func ListS3Objects(externalBucket string, prefix *string) ([]*S3Object, error) {
 // ListObjects lists the objects in a bucket with prefix if not nil.
 // Read from externalBucket if not empty, otherwise read from jetstore default bucket
 func ListS3ObjectsV2(s3Client *s3.Client, externalBucket string, prefix *string) ([]*S3Object, error) {
-	if externalBucket == "" {
+	if externalBucket == "" || externalBucket == "jetstore_bucket" {
 		externalBucket = jetstoreOwnBucket
+	}
+
+	// Validate the externally-provided prefix (CWE-73).
+	var cleanedPrefix *string
+	if prefix != nil {
+		cleaned, err := utils.SanitizeS3Prefix(*prefix)
+		if err != nil {
+			return nil, err
+		}
+		cleanedPrefix = &cleaned
 	}
 
 	// Download the keys
 	keys := make([]*S3Object, 0)
 	var token *string
-	for isTruncated := true; isTruncated; {
+	isTruncated := true
+	for isTruncated {
 		result, err := s3Client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 			Bucket:            aws.String(externalBucket),
-			Prefix:            prefix,
+			Prefix:            cleanedPrefix,
 			MaxKeys:           aws.Int32(500),
 			ContinuationToken: token,
 		})
@@ -346,8 +400,14 @@ func ListS3ObjectsV2(s3Client *s3.Client, externalBucket string, prefix *string)
 // CountS3ObjectsWithPrefix counts non-"folder" objects in the given bucket matching the prefix,
 // and skips any objects with size 0. If externalBucket is empty, it uses the JetStore default bucket.
 func CountS3ObjectsWithPrefix(s3Client *s3.Client, externalBucket, prefix string) (int64, string, error) {
-	if externalBucket == "" {
+	if externalBucket == "" || externalBucket == "jetstore_bucket" {
 		externalBucket = jetstoreOwnBucket
+	}
+
+	// Validate the externally-provided prefix (CWE-73).
+	prefix, err := utils.SanitizeS3Prefix(prefix)
+	if err != nil {
+		return 0, "", err
 	}
 
 	var count int64
@@ -391,29 +451,63 @@ func DownloadFromS3(bucket, region, objKey string, fileHd *os.File) (int64, erro
 	}
 
 	// Download the object
-	downloader := manager.NewDownloader(s3Client)
-	nsz, err := downloader.Download(context.TODO(), fileHd, &s3.GetObjectInput{Bucket: &bucket, Key: &objKey})
+	downloader := transfermanager.New(s3Client)
+	doo, err := downloader.DownloadObject(context.TODO(), &transfermanager.DownloadObjectInput{
+		Bucket:   &bucket,
+		Key:      &objKey,
+		WriterAt: fileHd,
+	}, func(o *transfermanager.Options) {
+		o.PartSizeBytes = 10 * 1024 * 1024 // 10 MB
+		o.Concurrency = 10
+		o.GetObjectType = types.GetObjectParts
+	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to download file from s3 bucket '%s': %v", bucket, err)
 	}
-	return nsz, nil
+	return *doo.ContentLength, nil
 }
 
-func NewDownloader(region string) (*manager.Downloader, error) {
+func NewDownloader(region string) (*transfermanager.Client, error) {
 	s3Client, err := NewS3Client()
 	if err != nil {
 		return nil, fmt.Errorf("while creating s3 client: %v", err)
 	}
-	return manager.NewDownloader(s3Client), nil
+	return transfermanager.New(s3Client), nil
 }
 
 // Use a shared Downloader to download obj from s3 into fileHd (must be writable), return size of download in bytes
-func DownloadFromS3v2(downloader *manager.Downloader, bucket, objKey string, byteRange *string, fileHd *os.File) (int64, error) {
-	nsz, err := downloader.Download(context.TODO(), fileHd, &s3.GetObjectInput{Bucket: &bucket, Key: &objKey, Range: byteRange})
+func DownloadFromS3v2(downloader *transfermanager.Client, bucket, objKey string, byteRange *string, fileHd *os.File) (int64, error) {
+
+	var doo *transfermanager.DownloadObjectOutput
+	var err error
+	if byteRange != nil {
+		log.Printf("Downloading s3 object '%s' from bucket '%s' with byte range '%s'", objKey, bucket, *byteRange)
+		doo, err = downloader.DownloadObject(context.TODO(), &transfermanager.DownloadObjectInput{
+			Bucket:   &bucket,
+			Key:      &objKey,
+			Range:    byteRange,
+			WriterAt: fileHd,
+		}, func(o *transfermanager.Options) {
+			o.PartSizeBytes = 10 * 1024 * 1024 // 10 MB
+			o.Concurrency = 10
+			o.GetObjectType = types.GetObjectRanges
+		})
+	} else {
+		log.Printf("Downloading s3 object '%s' from bucket '%s'", objKey, bucket)
+		doo, err = downloader.DownloadObject(context.TODO(), &transfermanager.DownloadObjectInput{
+			Bucket:   &bucket,
+			Key:      &objKey,
+			WriterAt: fileHd,
+		}, func(o *transfermanager.Options) {
+			o.PartSizeBytes = 10 * 1024 * 1024 // 10 MB
+			o.Concurrency = 10
+			o.GetObjectType = types.GetObjectParts
+		})
+	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to download file from s3 bucket '%s': %v", bucket, err)
 	}
-	return nsz, nil
+	return *doo.ContentLength, nil
 }
 
 // Use a shared Downloader to download obj from s3 into w
@@ -431,11 +525,37 @@ func DownloadFromS3v2(downloader *manager.Downloader, bucket, objKey string, byt
 //	buf := make([]byte, n)
 //	// wrap with aws.WriteAtBuffer
 //	w := manager.NewWriteAtBuffer(buf)
-func DownloadFromS3WithRetry(downloader *manager.Downloader, bucket, objKey string, byteRange *string, w io.WriterAt) (n int64, err error) {
+func DownloadFromS3WithRetry(downloader *transfermanager.Client, bucket, objKey string, byteRange *string, w io.WriterAt) (int64, error) {
+	var (
+		n   int64
+		err error
+	)
 	retry := 0
 do_retry:
 	// Download the object
-	n, err = downloader.Download(context.TODO(), w, &s3.GetObjectInput{Bucket: &bucket, Key: &objKey, Range: byteRange})
+	var doo *transfermanager.DownloadObjectOutput
+	if byteRange != nil {
+		doo, err = downloader.DownloadObject(context.TODO(), &transfermanager.DownloadObjectInput{
+			Bucket:   &bucket,
+			Key:      &objKey,
+			Range:    byteRange,
+			WriterAt: w,
+		}, func(o *transfermanager.Options) {
+			o.PartSizeBytes = 10 * 1024 * 1024 // 10 MB
+			o.Concurrency = 10
+			o.GetObjectType = types.GetObjectRanges
+		})
+	} else {
+		doo, err = downloader.DownloadObject(context.TODO(), &transfermanager.DownloadObjectInput{
+			Bucket:   &bucket,
+			Key:      &objKey,
+			WriterAt: w,
+		}, func(o *transfermanager.Options) {
+			o.PartSizeBytes = 10 * 1024 * 1024 // 10 MB
+			o.Concurrency = 10
+			o.GetObjectType = types.GetObjectParts
+		})
+	}
 	if err != nil {
 		if retry < 6 {
 			retry++
@@ -444,7 +564,7 @@ do_retry:
 		}
 		return n, fmt.Errorf("failed to download s3 file 's3://%s/%s': %v", bucket, objKey, err)
 	}
-	return n, nil
+	return *doo.ContentLength, nil
 }
 
 // upload object to S3, reading the obj from fileHd (from current position to EOF)
@@ -460,27 +580,30 @@ func UploadToS3FromReader(externalBucket, objKey string, reader io.Reader) error
 	}
 
 	// check if we write to an external bucket
-	if externalBucket == "" {
+	if externalBucket == "" || externalBucket == "jetstore_bucket" {
 		externalBucket = jetstoreOwnBucket
 	}
 
 	// Create an uploader with the client and custom options
-	uploader := manager.NewUploader(s3Client, func(u *manager.Uploader) {
-		u.PartSize = 64 * 1024 * 1024 // 64MB per part
-		u.Concurrency = 10
+	uploader := transfermanager.New(s3Client, func(o *transfermanager.Options) {
+		o.PartSizeBytes = 64 * 1024 * 1024
+		o.Concurrency = 10
 	})
 	retry := 0
 do_retry:
-	putObjInput := &s3.PutObjectInput{
+	putObjInput := &transfermanager.UploadObjectInput{
 		Bucket: &externalBucket,
 		Key:    &objKey,
 		Body:   reader,
 	}
 	if len(kmsKeyArn) > 0 {
 		putObjInput.ServerSideEncryption = types.ServerSideEncryptionAwsKms
-		putObjInput.SSEKMSKeyId = &kmsKeyArn
+		putObjInput.SSEKMSKeyID = &kmsKeyArn
 	}
-	_, err = uploader.Upload(context.TODO(), putObjInput)
+	_, err = uploader.UploadObject(context.TODO(), putObjInput, func(o *transfermanager.Options) {
+		o.PartSizeBytes = 64 * 1024 * 1024
+		o.Concurrency = 10
+	})
 	if err != nil {
 		if retry < 6 {
 			retry++
@@ -504,7 +627,7 @@ func DownloadBufFromS3(objKey string) ([]byte, error) {
 		return nil, fmt.Errorf("while creating s3 client: %v", err)
 	}
 	// Download the object
-	downloader := manager.NewDownloader(s3Client)
+	downloader := transfermanager.New(s3Client)
 
 	retry := 0
 do_retry:
@@ -513,7 +636,15 @@ do_retry:
 	buf := make([]byte, 2048)
 	// wrap with aws.WriteAtBuffer
 	w := manager.NewWriteAtBuffer(buf)
-	_, err = downloader.Download(context.TODO(), w, &s3.GetObjectInput{Bucket: &jetstoreOwnBucket, Key: &objKey})
+	_, err = downloader.DownloadObject(context.TODO(), &transfermanager.DownloadObjectInput{
+		Bucket:   &jetstoreOwnBucket,
+		Key:      &objKey,
+		WriterAt: w,
+	}, func(o *transfermanager.Options) {
+		o.PartSizeBytes = 10 * 1024 * 1024 // 10 MB
+		o.Concurrency = 10
+		o.GetObjectType = types.GetObjectParts
+	})
 	if err != nil {
 		if retry < 6 {
 			retry++

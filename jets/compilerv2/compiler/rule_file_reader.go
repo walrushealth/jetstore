@@ -13,7 +13,8 @@ import (
 // line number in each file.
 
 var reImportPattern = regexp.MustCompile(`import\s*"([a-zA-Z0-9_\/.-]*)"`)
-type readFileFunc func(filePath string) (string, error)
+
+type readFileFunc func(baseDir, fileName string) (string, error)
 
 // RuleFileReader reads and combines rule files
 // with support for import statements and tracking line numbers
@@ -109,8 +110,7 @@ func (r *RuleFileReader) readFileRecursive(fileName string) error {
 	r.combinedContent.WriteString(fmt.Sprintf("@JetCompilerDirective source_file = \"%s\";\n", fileName))
 	r.globalLineNum++
 
-	filePath := fmt.Sprintf("%s/%s", r.basePath, fileName)
-	content, err := r.readFile(filePath)
+	content, err := r.readFile(r.basePath, fileName)
 	if err != nil {
 		return err
 	}

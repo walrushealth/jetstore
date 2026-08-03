@@ -235,6 +235,7 @@ type CsvSourceSpec struct {
 // DomainKeysSpec is parsed version of DomainKeys or the spec from the domain_keys_registry table.
 // DomainKeysSpec is derived from DomainKeys when provided.
 // EntityEncoding is used to specify the entity encoding: json, toon, row (default).
+// RemoveModelPrefixes is used to remove the model prefixes from the columns, e.g., jets: or rdf: on the output (currently used only for json and toon).
 // columnsMap is added in StartComputePipes
 type ChannelSpec struct {
 	Name                 string          `json:"name"`
@@ -246,6 +247,8 @@ type ChannelSpec struct {
 	DomainKeys           map[string]any  `json:"domain_keys,omitempty"`
 	DomainKeysInfo       *DomainKeysSpec `json:"domain_keys_spec,omitzero"`
 	EntityEncoding       string          `json:"entity_encoding,omitempty"`
+	RemoveModelPrefixes  bool            `json:"remove_model_prefixes,omitzero"`
+	ExcludeProperties    []string        `json:"exclude_properties,omitempty"`
 	columnsMap           *map[string]int
 }
 
@@ -275,6 +278,7 @@ type FileConfig struct {
 	EnforceRowMaxLength        bool                   `json:"enforce_row_max_length,omitzero"`
 	EnforceRowMinLength        bool                   `json:"enforce_row_min_length,omitzero"`
 	EolByte                    byte                   `json:"eol_byte,omitzero"`
+	FailOnEmptyColumnName      bool                   `json:"fail_on_empty_column_name,omitzero"`
 	FileKey                    string                 `json:"file_key,omitempty"`
 	LookbackPeriods            string                 `json:"lookback_periods,omitzero"`
 	FileName                   string                 `json:"file_name,omitempty"` // Type output
@@ -319,6 +323,7 @@ type SchemaProviderSpec struct {
 	// DiscardFileHeaders: when true, discard the headers from the input file (typically for csv format),
 	// this will force to use Headers or Columns from the configuration, or from the schema provider if Headers and Columns are not provided.
 	// EolByte: Byte to use as eol (format: csv,headerless_csv).
+	// FailOnEmptyColumnName: when true, fail if a column name is empty (format: csv,headerless_csv) - this is to prevent using a data row as headers.
 	// MultiColumnsInput: Indicate that input file must have multiple columns,
 	// this is used to detect if the wrong delimiter is used (csv,headerless_csv).
 	// ReadBatchSize: nbr of rows to read per record (format: parquet).

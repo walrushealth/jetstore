@@ -62,7 +62,8 @@ func (j *JetRulesProxyImpl) GetNativeFactory() compute_pipes.JetRulesFactory {
 }
 
 func main() {
-	fmt.Println("LOCAL TEST DRIVER CMD LINE ARGS:", os.Args[1:])
+	// utils.UseJetStoreLogger()
+	log.Println("LOCAL TEST DRIVER CMD LINE ARGS:", os.Args[1:])
 	flag.Parse()
 	start := time.Now()
 	defer func() {
@@ -115,7 +116,7 @@ func main() {
 	log.Println("CP Starter:")
 	log.Println("-----------")
 	log.Println("Got argument: awsBucket", awsBucket)
-	log.Println("Got argument: awsDsnSecret", awsDsnSecret)
+	log.Println("Got argument: awsDsnSecret len", len(awsDsnSecret))
 	log.Println("Got argument: dbPoolSize", dbPoolSize)
 	log.Println("Got argument: awsRegion", awsRegion)
 	log.Println("Got env: JETS_S3_KMS_KEY_ARN", os.Getenv("JETS_S3_KMS_KEY_ARN"))
@@ -125,7 +126,7 @@ func main() {
 		for _, msg := range errMsg {
 			log.Println("** error:", msg)
 		}
-		panic("Invalid argument(s)")
+		log.Panic("Invalid argument(s)")
 	}
 
 	// open db connection

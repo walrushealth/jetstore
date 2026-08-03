@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
+	"github.com/artisoft-io/jetstore/jets/utils"
 )
 
 // # Env Variables Correspondence
@@ -74,6 +75,7 @@ var globalDevMode bool
 var serverAddr string
 
 func main() {
+	utils.UseJetStoreLogger()
 	flag.Parse()
 	hasErr := false
 	var errMsg []string
@@ -172,7 +174,7 @@ func main() {
 		for _, msg := range errMsg {
 			log.Println("**", msg)
 		}
-		panic(errMsg)
+		log.Panic(errMsg)
 	}
 
 	log.Println("apiserver argument:")
@@ -180,7 +182,7 @@ func main() {
 	log.Println("Got argument: awsApiSecret", *awsApiSecret)
 	log.Println("Got argument: apiSecret len", len(*apiSecret))
 	log.Println("Got argument: dsn len", len(*dsn))
-	log.Println("Got argument: awsDsnSecret", *awsDsnSecret)
+	log.Println("Got argument: awsDsnSecret len", len(*awsDsnSecret))
 	log.Println("Got argument: dbPoolSize", *dbPoolSize)
 	log.Println("Got argument: usingSshTunnel", *usingSshTunnel)
 	log.Println("Got argument: awsRegion", *awsRegion)

@@ -37,6 +37,7 @@ type User struct {
 //	- workspace_ide: Access workspace IDE screens and functions, including query tool and git functions
 //	- run_pipelines: Load files and run pipelines
 //  - user_profile:  Update user profile
+//  - infer_server_admin: Start & stop the Infer Server and manage its models
 // NOTE: role_capability table is initialized in jets_init_db.sql
 
 func NewUser(email string) *User {
@@ -101,11 +102,11 @@ func (u *User) Validate(action string) error {
 		if u.Email == "" {
 			return errors.New("required Email")
 		}
-		if !u.IsAdmin() {
-			if err := checkmail.ValidateFormat(u.Email); err != nil {
-				return errors.New("invalid Email")
-			}
-		}
+		// A login is checked against the database, not against an email format:
+		// the built-in administrator's login need not be an email (-adminEmail
+		// defaults to "admin"), and a login nobody registered fails the lookup
+		// in Server.Login like any other. Registration still requires an email
+		// (the default case below). rules_unit_test_harness I-32, 2026-10-11.
 		return nil
 
 	default:

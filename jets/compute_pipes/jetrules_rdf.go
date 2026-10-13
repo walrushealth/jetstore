@@ -259,8 +259,18 @@ func castToRdfTypeFromTxt(inValue string, rdfType string, isArray *bool) (any, e
 		return utils.String2UInt(inValue)
 
 	case "bool":
-		return rdf.ParseBool(inValue), nil
-	
+		// Empty returned nil above. A value outside the accepted spellings is
+		// an error, which each caller turns into its own policy (I-45):
+		// map_record's on_error for client data, a failed read for a typed file.
+		b, err := rdf.ParseBool(inValue)
+		if err != nil {
+			return nil, err
+		}
+		if b {
+			return 1, nil
+		}
+		return 0, nil
+
 	case "datetime":
 		dt, err := rdf.ParseDatetime(inValue)
 		if err != nil {
@@ -299,7 +309,14 @@ func encodeRdfTypeToTxt(inValue any) string {
 	case float32:
 		return strconv.FormatFloat(float64(vv), 'f', -1, 32)
 	case time.Time:
-		return vv.Format("2006-01-02T15:04:05")
+		switch {
+		case vv.IsZero():
+			return ""
+		case vv.Hour() == 0 && vv.Minute() == 0 && vv.Second() == 0 && vv.Nanosecond() == 0:
+			return vv.Format("2006-01-02")
+		default:
+			return vv.Format("2006-01-02T15:04:05")
+		}
 	case uint:
 		return strconv.FormatUint(uint64(vv), 10)
 	case uint32:

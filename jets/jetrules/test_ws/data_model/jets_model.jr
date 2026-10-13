@@ -1,4 +1,12 @@
 # =======================================================================================
+# jetstore-owned-asset: data_model/jets_model.jr — DO NOT EDIT.
+# Source: hand-authored in JetStore at jets/workspace_assets/data_model/jets_model.jr;
+# the platform base model, one copy for every workspace.
+# Installed into this workspace at image build time and overwritten on every build; a
+# local edit is lost, and the build fails rather than clobbering it silently. Extend the
+# model from your own file that imports this one.
+#   import "data_model/jets_model.jr"
+# =======================================================================================
 # Jets Data Model 
 # ---------------------------------------------------------------------------------------
 # Define the jets data model version
@@ -15,15 +23,6 @@ class jets:Entity {
     rdf:type                    as array of resource
   ],
   $as_table = false
-};
-
-# Class to use when encoding as toon or json
-class json:Data {
-  $base_classes = [jets:Entity],
-  $data_properties = [
-    json:data                   as text
-  ],
-  $as_table = true
 };
 
 # Marker class to indicate the entity is a mapped entity

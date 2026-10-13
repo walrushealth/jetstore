@@ -51,7 +51,7 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 	var cpErr, err error
 	var channelRegistry *ChannelRegistry
 	var outChannel *Channel
-	var wt WriteTableSource
+	var wt *WriteTableSource
 	var table chan ComputePipesResult
 	var ctx *BuilderContext
 	var inputChannel InputChannelConfig
@@ -163,7 +163,7 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 		for j, c := range chSpec.Columns {
 			cm[c] = j
 		}
-		chSpec.columnsMap = &cm
+		chSpec.SetColumnsMap(&cm)
 		channelsSpec[cpCtx.CpConfig.Channels[i].Name] = chSpec
 		channelsInUse[cpCtx.CpConfig.Channels[i].Name] = chSpec
 	}
@@ -184,8 +184,8 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 			Columns:        mainInput.InputColumns,
 			ClassName:      mainInput.DomainClass,
 			DomainKeysInfo: mainInput.DomainKeys,
-			columnsMap:     &headersPosMap,
 		}
+		inputRowChSpec.SetColumnsMap(&headersPosMap)
 		inputRowChannel = &InputChannel{
 			Name:           "input_row",
 			Channel:        computePipesInputCh,
@@ -203,17 +203,18 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 	outputChannels = make([]*OutputChannelConfig, 0)
 	for i := range cpCtx.CpConfig.PipesConfig {
 		for j := range cpCtx.CpConfig.PipesConfig[i].Apply {
-			switch cpCtx.CpConfig.PipesConfig[i].Apply[j].Type {
+			transformationConfig := &cpCtx.CpConfig.PipesConfig[i].Apply[j]
+			switch transformationConfig.Type {
 			case "anonymize":
-				outputChannel := &cpCtx.CpConfig.PipesConfig[i].Apply[j].OutputChannel
+				outputChannel := &transformationConfig.OutputChannel
 				outputChannels = append(outputChannels, outputChannel)
-				outputChannel = cpCtx.CpConfig.PipesConfig[i].Apply[j].AnonymizeConfig.KeysOutputChannel
+				outputChannel = transformationConfig.AnonymizeConfig.KeysOutputChannel
 				if outputChannel != nil {
 					outputChannels = append(outputChannels, outputChannel)
 				}
 			case "jetrules":
 				// Jetrules config overrides the outputChannel
-				jetruleConfig := cpCtx.CpConfig.PipesConfig[i].Apply[j].JetrulesConfig
+				jetruleConfig := transformationConfig.JetrulesConfig
 				if jetruleConfig == nil {
 					cpErr = fmt.Errorf("error: jetrules_config is required for transformation of type jetrules in PipesConfig")
 					goto gotError
@@ -226,18 +227,33 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 					outputChannel := &jetruleConfig.OutputChannels[k]
 					outputChannels = append(outputChannels, outputChannel)
 				}
-				// Add the error output channel if specified
-				if jetruleConfig.ErrorChannel != nil {
-					outputChannels = append(outputChannels, jetruleConfig.ErrorChannel)
-				}
 			case "clustering":
-				outputChannel := &cpCtx.CpConfig.PipesConfig[i].Apply[j].OutputChannel
+				outputChannel := &transformationConfig.OutputChannel
 				outputChannels = append(outputChannels, outputChannel)
-				outputChannel = cpCtx.CpConfig.PipesConfig[i].Apply[j].ClusteringConfig.CorrelationOutputChannel
+				outputChannel = transformationConfig.ClusteringConfig.CorrelationOutputChannel
 				outputChannels = append(outputChannels, outputChannel)
 			default:
-				outputChannel := &cpCtx.CpConfig.PipesConfig[i].Apply[j].OutputChannel
+				// Note the ollama operator falls here: it augments the input record in
+				// place, so its output channel shares the input channel's spec.
+				outputChannel := &transformationConfig.OutputChannel
 				outputChannels = append(outputChannels, outputChannel)
+			}
+			// The operators that report row level errors write to an error channel, which
+			// must be registered here too or it is missing from the channel registry.
+			// See errorChannelConfig for the operators concerned.
+			errorChannel := errorChannelConfig(transformationConfig)
+			if errorChannel != nil && len(errorChannel.Name) > 0 {
+				outputChannels = append(outputChannels, errorChannel)
+			}
+			// A site operator's `site_config.output_channels`, for the same reason and
+			// through the same door: the builder resolves them out of this registry and
+			// hands them to the factory on OperatorArgs.Outputs, so a channel declared
+			// there and not registered here fails the resolution rather than the write.
+			// The default: branch above has already taken the step's own output_channel.
+			for _, siteChannel := range siteOutputChannelConfigs(transformationConfig) {
+				if len(siteChannel.Name) > 0 {
+					outputChannels = append(outputChannels, siteChannel)
+				}
 			}
 		}
 	}
@@ -263,7 +279,7 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 		channelRegistry.ComputeChannels[name] = &Channel{
 			Name:          name,
 			Channel:       make(chan []any),
-			Columns:       spec.columnsMap,
+			Columns:       spec.ColumnsMap(),
 			DomainKeySpec: spec.DomainKeysInfo,
 			Config:        spec,
 		}
@@ -319,6 +335,12 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 		}
 	}
 
+	// Built-in error reporting: the synthesised error channels are one per operator,
+	// as validateErrorChannels requires, and they share one table writer rather than
+	// taking one pooled connection each. Started before the writers so the sink is
+	// being fed from the moment the writer's CopyFrom begins reading it.
+	startDefaultErrorChannelFanIn(channelRegistry, cpCtx.CpConfig, cpCtx.Done)
+
 	// Prepare the output tables
 	for i := range cpCtx.CpConfig.OutputTables {
 		tableName := cpCtx.CpConfig.OutputTables[i].Name
@@ -344,11 +366,13 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 		if cpCtx.CpConfig.ClusterConfig.IsDebugMode {
 			log.Println("*** Channel for Output Table", tableIdentifier, "is:", outChannel.Name)
 		}
-		wt = WriteTableSource{
-			source:          outChannel.Channel,
-			tableIdentifier: tableIdentifier,
-			columns:         outChannel.Config.Columns,
-		}
+		// The DAG edge this writer is: from the channel named by
+		// channel_spec_name to the output table, named by its key rather than
+		// by tableIdentifier — the table name is env-var substituted and is not
+		// unique across the output_tables entries of a config.
+		wt = NewWriteTableSource(outChannel.Channel, tableIdentifier, outChannel.Config.Columns,
+			cpCtx.CpConfig.OutputTables[i].ChannelSpecName, cpCtx.CpConfig.OutputTables[i].Key,
+			cpCtx.CpConfig.OutputTables[i].ChannelSpecName, cpCtx.Done, cpCtx.ErrCh)
 		table = make(chan ComputePipesResult, 1)
 		cpCtx.ChResults.Copy2DbResultCh <- table
 		go wt.WriteTable(dbpool, cpCtx.Done, table)
@@ -370,6 +394,7 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 		schemaManager:      cpCtx.SchemaManager,
 		inputParquetSchema: inputParquetSchema,
 		jetRules:           cpCtx.JetRules,
+		siteOperators:      cpCtx.SiteOperators,
 		mainMergeDone:      cpCtx.MainMergeDone,
 		done:               cpCtx.Done,
 		errCh:              cpCtx.ErrCh,
@@ -397,13 +422,14 @@ func (cpCtx *ComputePipesContext) StartComputePipes(dbpool *pgxpool.Pool,
 	// Wait until the lookup tables are ready
 	managersWg.Wait()
 
-	// log.Println("Calling ctx.BuildComputeGraph()")
 	err = ctx.BuildComputeGraph()
 	if err != nil {
 		cpErr = fmt.Errorf("while building the compute graph: %s", err)
 		goto gotError
 	}
-	// log.Println("Calling ctx.BuildComputeGraph() completed")
+	if cpCtx.CpConfig.ClusterConfig.IsDebugMode {
+		log.Println("*** Calling ctx.BuildComputeGraph() completed")
+	}
 
 	// All done!
 	close(cpCtx.ChResults.Copy2DbResultCh)

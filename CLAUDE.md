@@ -6,7 +6,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 JetStore is a **Compute Analytic Platform** for cloud-native data processing, rule-based inference, and analytical pipelines. It combines a high-performance C++ RETE rules engine with Go-based orchestration, distributed compute pipes, and AWS cloud infrastructure.
 
+## Package notes — where a discovery gets written down
+
+**When something costs you real digging, write it into a `README.md` in the Go package it belongs
+to.** Not API documentation — that goes in doc comments, where `go doc` and an editor hover will find
+it. A package `README.md` is for what you cannot see from the code in front of you: how a mechanism
+behaves across a process boundary, what an environment variable is really deciding, why an
+obvious-looking change is wrong.
+
+The bar is *would the next person have lost a day without this?* Cite `file:line` so an entry can be
+checked rather than believed, say what was **measured** rather than reasoned, and date it — a fact
+about deployment wiring goes stale without announcing it. Entries are appended, newest first.
+
+| Package | Covers |
+|---|---|
+| `jets/compute_pipes/README.md` | How a compiled workspace reaches a running process, and the `JETS_VERSION` chain that decides whether it is fetched — including the cbooter/Lambda asymmetry and the Docker `ARG`/`ENV` resolution rule |
+| `jets/jetrules/rete/README.md` | Where the Go and C++ rule engines disagree — four measured divergences on the aggregate operators (two fixed in C++ on 2026-09-09), the double-literal quantisation, why adding an operator is exactly two registrations and the **six operator names only one factory has**, what `_0:no_truth_main_on_exist` turns off, why **a consequent aggregate is recomputed by neither engine**, which is what every use in `workspaces/` actually is, why **a minting consequent is retracted by replay** while two retraction defects are kept because `usi_ws`'s loop rules terminate only because of them (2026-10-09) |
+| `jets/sqlscript/README.md` | How JetStore reads a SQL file — why a `;` is not a statement boundary, the three consumers and which two must not split, and the measured consequence: `Exec` with no bind arguments sends the **simple** protocol, so PostgreSQL parses the whole file and wraps it in **one implicit transaction**, which is what makes a `DELETE`-then-`INSERT` init script safe. Plus why an *explicit* transaction here would break a script that opens its own, and what the `.sql` save-hook row cost as the **first non-JSON file type**: a `.JSON` gate that would have made it unreachable, and a `Finding` that carried a JSON Pointer and no line |
+
+**Put the entry where someone will be standing when they hit the symptom**, not where the mechanism
+happens to be implemented, and cross-reference by `file:line` rather than duplicating. A discovery
+that spans several packages still gets one home; two copies drift.
+
+**System-wide deployment wiring stays here instead** — the *Infer Server* section below is the model
+for that: one place, describing how the pieces are wired rather than what one package does.
+
 ## Build Commands
+
+**All paths below are relative to this repository's root.** On the `jets_ai` branch this repo is
+normally checked out as a submodule of `jetstore_agentic_ai` (at `jetstore_ai/`), which carries its
+own `go.work` and its own CMake build tree over these same sources. Both build systems then resolve
+differently depending on whether your working directory is inside this repo or above it — see the
+notes under each. That parent repo's `CLAUDE.md` documents the arrangement; the commands here assume
+you are inside this repo.
 
 ### C++ RETE Engine (CMake)
 ```bash
@@ -19,6 +51,10 @@ ctest
 # Or directly: build/jets/jets_test
 ```
 
+A parent checkout may configure a *second*, independent build tree over these sources (the
+`jetstore_agentic_ai` one is Debug, at its root `build/`, and is what its `.vscode` CMake integration
+uses). The two caches share no state, so an artifact staleness question has to name which tree.
+
 ### Go Binaries
 ```bash
 go mod tidy
@@ -27,6 +63,12 @@ go build -ldflags="-w -s" -o <binary> <package>
 ```
 
 The repo uses a Go workspace (`go.work`) covering three modules: root `.`, `./cdk/bootstrap_aws`, and `./cdk/vpc_peering`.
+
+Go selects a workspace by walking up from the current directory and stopping at the first `go.work`,
+so this file only governs commands run **from inside this repo**. Run from a parent that has its own
+`go.work` — as `jetstore_agentic_ai` does, where the workspace is `.`, `./jetstore_ai`, and
+`./workspaces/cedargate_ws` — and the CDK modules drop out of the build set while the cedargate
+workspace's Go lambdas enter it. Do CDK work from this directory.
 
 ### Docker (full build)
 See `dockerfiles/Dockerfile.cpipes_builder` — multi-stage build that compiles C++ first, then cross-compiles Go binaries for `linux/amd64`.
@@ -47,6 +89,34 @@ go test ./jets/compute_pipes/... # single package tree
 go test -run TestFooBar ./jets/datatable/  # single test
 ```
 Key test packages: `compute_pipes`, `datatable`, `workspace`, `jetrules`.
+
+### Flutter Tests (`jetsclient/`)
+
+**They only run on the chrome platform. Plain `flutter test` fails to load every
+test in the package**, with compile errors from `package:web` — a direct
+dependency at `jetsclient/pubspec.yaml:52`, and web-only by construction, so it
+does not build for the Dart VM that `flutter test` targets by default. The errors
+name `jsify`, `toJS` and `ProgressEvent` and look like a broken test rather than
+a broken target, which is why this is written down.
+
+```bash
+cd jetsclient
+CHROME_EXECUTABLE=/usr/bin/google-chrome flutter test --platform chrome
+```
+
+The consequence for test design: **there is no filesystem.** A test that wants to
+emit an artefact has to print it and be scraped, and a test that wants to detect
+drift has to compare a checksum rather than a file — which is what
+`test/table_config_corpus_test.dart` does, and its header explains why.
+
+### JavaScript Tests (`jetsclient_ide/`)
+
+```bash
+cd jetsclient_ide
+npm ci
+npm test          # vitest, node environment, src/**/*.test.ts
+npm run typecheck # tsc --noEmit; `npm run build` runs it first
+```
 
 ## Architecture
 
@@ -112,6 +182,32 @@ Rules are authored in JetRules DSL, compiled via `CompilerV2` into a `workspace.
 
 `JETS_DSN` (PostgreSQL DSN), `JETS_REGION` (AWS region), `API_SECRET` (JWT secret), `WORKSPACE` (active workspace name), `WORKSPACES_HOME` (workspace root path), `JETS_BUCKET` (S3 bucket), `NBR_SHARDS`.
 
+**`JETS_NO_GIT_ACCESS=1` — set this when running the apiserver on a workstation.** Truthy is `1`,
+`true`, `yes` or `on`; unset, empty or anything else leaves git on, so this changes nothing for a
+deployment that does not set it. It turns every workspace git operation into a logged no-op
+(`jets/datatable/git/no_git_access.go`), and it exists for two consumers: a site deployed with no
+route to a source-control host, and local development.
+
+**The local reason is the one that costs you something if you skip it, and it is not the obvious
+one.** On a workstation this repo is normally checked out as a submodule of `jetstore_agentic_ai`,
+whose `workspaces/` is the natural `WORKSPACES_HOME` — so a workspace is a **submodule of the
+repository you are working in**. Two consequences:
+
+- **The visible one.** An uninitialised submodule is a directory that exists and is not a
+  repository, so `GetStatus`'s directory-absent branch does not catch it, `git rev-parse` exits 128,
+  and `DoWorkspaceReadAction` returns 400 for the whole request rather than for the row — the
+  Workspace Registry screen does not render at all.
+- **The expensive one.** `runGit` sets `cmd.Dir` to `${WORKSPACES_HOME}/${WORKSPACE}`, so the write
+  actions operate on *your* working tree: `UpdateLocalWorkspace` runs `switch`, `pull` and `push`,
+  and `CommitLocalWorkspace` runs `add -A`, `commit` and `push`. A button in a local UI can move your
+  HEAD, stage everything under it, and push. And a submodule moved under you leaves a detached HEAD
+  with `git status` reporting **clean** about a tree you did not ask for, so every signal says
+  nothing happened.
+
+The apiserver states which way the switch went in its first lines of log output
+(`LogGitAccessMode`), which is the cheapest way to find out you forgot. `cdk/jetstore_one/doc/deploy_runbook.md`
+§8 carries the longer version.
+
 ## Database
 
 PostgreSQL is the primary database. Schema files:
@@ -128,6 +224,105 @@ AWS CDK infrastructure is in `cdk/`:
 - `cdk/jetstore_one/` — main stack: ECS Fargate, Lambda, RDS, Step Functions, VPC
 - `cdk/vpc_peering/` — VPC peering utility
 
-## Flutter UI
+Stack composition is driven almost entirely by environment variables read at synth time, not by
+CDK context or config files. `cdk/jetstore_one/jetstore_one.go` carries the authoritative list in
+a comment block near the bottom of the file, and logs every value at synth — read that block
+before adding a new toggle.
 
-`jetsclient/` is a Flutter/Dart web app for workspace management and pipeline administration. Build with standard Flutter tooling (`flutter build web`).
+### Infer Server (GPU inference)
+
+Optional subsystem, gated behind `BUILD_INFER_SERVICE=true`. Every component no-ops via
+`JetStoreStackComponents.DoBuildInferServer()` (`stack/stack_model.go`) when the flag is off, so
+the default stack is unaffected. It spans two files that must be read together:
+
+| File | Builds |
+|---|---|
+| `stack/build_infer_ec2.go` | ASG + launch template, persistent EBS volume, lifecycle-hook Lambda |
+| `stack/build_infer_service.go` | ECS container definition — infer image, `cbooter infer_server` entrypoint, port 11434, `GpuCount: 1`, and the per-backend environment |
+
+It runs a model server as an EC2-backed ECS service (not Fargate — Fargate has no GPU
+support). The default image is built from `dockerfiles/Dockerfile.infer_service`: Amazon
+Linux 2023 + the Ollama release archive + `cbooter`, which starts `ollama serve` as `jsuser`
+(uid/gid 999). Two traps in that hand-off: AL2023 does not predefine uid 999, so the Dockerfile
+creates it the way `Dockerfile.cpipes` does; and `syscall.Credential` changes the uid without
+changing `HOME`, so `HOME` and `OLLAMA_MODELS` must both be pointed under `JETS_TEMP_DATA` or
+Ollama fails writing its signing key and caches to root's home.
+
+**There are two images and one toggle** (item 15b, 2026-09-04).
+`dockerfiles/Dockerfile.infer_service_vllm` is the second: the pinned `vllm/vllm-openai` image
+plus the same `cbooter`, serving on the same port 11434. `cbooter infer_server` dispatches on
+`JETS_INFER_BACKEND` (`inferServerCommand`, `jets/cmds/cbooter/main.go`), each image sets that
+variable, and the default when it is absent is `ollama` — so nothing about the existing arm
+changes.
+
+**A second image rather than a fused one, and the reason is the paragraph above.** The CUDA
+runtime ships *inside* the Ollama archive; vLLM's comes from PyTorch wheels pinned to their own
+CUDA version. Fusing them means two runtimes in one image or a build project to share one. Two
+consequences worth knowing before touching either file: cold start is one of the things the
+backend comparison measures and a fused image makes each backend pay the other's pull; and the
+comparison exists to decide whether vLLM is adopted at all, which putting it in the production
+image would pre-empt.
+
+**No second service and no second pool.** A task definition names an image, so an arm is a
+task-definition revision on the same service, capacity provider, ASG and target group.
+`GpuCount` is 1, so the two could not run at once regardless. What the stack varies besides the
+image is `INFER_BACKEND`, and it decides exactly two things: which environment block the
+container definition carries (`inferContainerEnvironment`,
+`cdk/jetstore_one/stack/build_infer_service.go`) and which path the ALB health-checks
+(`build_elb.go`) — **the two servers 404 on each other's health route**, Ollama having no
+`/health` and vLLM's OpenAI server returning 404 on `/`.
+
+**The asymmetry that is not cosmetic: vLLM binds one model at startup and Ollama pulls one per
+request.** So `JETS_INFER_MODEL` is required for the vLLM arm, changing model is a
+task-definition revision, and the four Ollama routes the infer admin screen proxies
+(`inferActions`, `jets/apiserver/api_infer_server.go`) have no vLLM counterpart.
+
+Three pieces of non-obvious wiring:
+
+**Persistent EBS across instance restarts.** LLM weights live on a separate 100GB volume with
+`RemovalPolicy_RETAIN`, deliberately not managed by the instance lifecycle. An
+`EC2_INSTANCE_LAUNCHING` lifecycle hook fires an inline-Python Lambda that attaches the volume
+and only then signals `CONTINUE` — the launch template's user data assumes `/dev/xvdf` already
+exists when it runs `mount`. This is why the ASG and the volume are both pinned to
+`AvailabilityZones()[0]`: an EBS volume cannot cross an AZ. Changing the AZ pinning on either
+side silently breaks instance launch.
+
+**GPU scheduling is ECS-native, and the AMI must cooperate.** The instances run the stock ECS
+GPU-optimized AMI (`al2023-ami-ecs-gpu-hvm-*`, resolved from SSM by
+`awsecs.EcsOptimizedImage_AmazonLinux2023`), which ships the NVIDIA driver, the ECS agent, and a
+GPU inventory at `/var/lib/ecs/gpu/nvidia-gpu-info.json`. That inventory is what makes the task
+definition's `GpuCount` schedulable — without it the task lands with no GPU and Ollama silently
+falls back to CPU. `INFER_AMI_NAME` still exists as an escape hatch for pinning a custom AMI, but
+such an AMI must reproduce that inventory and match `INFER_AMI_ROOT_DEVICE` (`/dev/xvda` on
+AL2023, `/dev/sda1` on Ubuntu images).
+
+`tools/infer_ami_builder/` predates this and is no longer on the deploy path.
+
+**Container CMD must be cleared, not just left unset.** The `amazonlinux:2023` base image sets
+`CMD ["/bin/bash"]`. ECS task definitions here override `entryPoint` but not `command`, so an
+image that does not reset `CMD` gets `/bin/bash` appended to its arguments.
+
+## Tools
+
+`tools/` holds standalone utilities that are not part of any Go module or the main build:
+- `infer_ami_builder/` — Packer template for the GPU AMI consumed by the Infer Server (see above)
+- `vscode-jetrule/` — VS Code extension for the JetRules DSL (grammar and snippets, no TypeScript)
+- `sample_projects/` — example workspaces
+
+## Web UIs
+
+Two web apps, served by the same apiserver on the same origin.
+
+`jetsclient/` is a Flutter/Dart web app for workspace management and pipeline administration. Build
+with standard Flutter tooling (`flutter build web`). Served at `/`.
+
+`jetsclient_ide/` is a React + TypeScript + vite app — the Workspace IDE's CodeMirror 6 editor.
+Build with `npm ci && npm run build`. Served at `/ide/`, and that prefix is compiled into the asset
+urls by vite's `base`, so the bundle cannot be moved to another prefix without rebuilding it. It has
+its own `README.md`.
+
+Both are built into the `ui_service_ws` image (`dockerfiles/Dockerfile.ui_service_ws`) and land at
+`/usr/local/lib/web` and `/usr/local/lib/ide`, which are the defaults of the apiserver's
+`-WEB_APP_DEPLOYMENT_DIR` and `-IDE_APP_DEPLOYMENT_DIR` flags. The toolchains for both — Flutter and
+Node — are installed in `dockerfiles/Dockerfile.cpipes_base_builder`, each pinned to a release
+tarball rather than taken from the distro.

@@ -1,6 +1,7 @@
 /**
- * The eleven flows' action documents, checked against the grammar and against the
- * Dart they were derived from.
+ * The ported flows' action documents, checked against the grammar and against the
+ * Dart they were derived from: eleven at F.9, the ten imported below since
+ * 2026-10-01.
  *
  * **This was `coverage.test.ts` until F.9, 2026-08-24, and the rename is the whole
  * of what that task did to it.** It exists because S.2a's exit condition said
@@ -236,7 +237,11 @@ describe("the flows' action documents", () => {
     // merged or historical sources, so `spPipelineSelected`, which unpacked the
     // pipeline's merged and injected key lists for the two tables that drew them,
     // went with them. The second retirement, after `registerFileKeyUF`'s.
-    expect(names).toHaveLength(58);
+    //
+    // **59 since 2026-11-05** (jetstore_maintenance JM-062): `homeFiltersUF`
+    // gained `checkPendingTasks`, the Pipeline Status table's *Check Pending*
+    // button, carried because the flow draws that table.
+    expect(names).toHaveLength(59);
     expect(new Set(names).size).toBeLessThan(names.length); // dialogCancel repeats across flows
   });
 
@@ -452,7 +457,11 @@ describe("the flows' action documents", () => {
     //
     // **Nine, the same day** (`D04`, `AE.4`, `AE.5`): `getRunManifest` and
     // `getSchemaEvent` are the table's third-row buttons, here for the same reason.
+    //
+    // **Ten since 2026-11-05** (jetstore_maintenance JM-062): `checkPendingTasks`,
+    // the first-row *Check Pending* button, beside *Put Schema Event*.
     expect(Object.keys((homeFilters as ActionDocument).actions).sort()).toEqual([
+      "checkPendingTasks",
       "dialogCancel",
       "getRunManifest",
       "getSchemaEvent",

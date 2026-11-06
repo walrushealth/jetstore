@@ -3,9 +3,12 @@ package datatable
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/artisoft-io/jetstore/jets/agentic/briefing"
+	"github.com/artisoft-io/jetstore/jets/datatable/wsfile"
+	"github.com/artisoft-io/jetstore/jets/optstats"
 	"github.com/artisoft-io/jetstore/jets/sqlscript"
 	"github.com/artisoft-io/jetstore/jets/userflow"
 	"github.com/artisoft-io/jetstore/jets/wsvalidate"
@@ -70,6 +73,26 @@ var workspaceFileValidators = []struct {
 	{".tc.json", userflow.ValidateTableDocument},
 	{briefing.DocumentSuffix, briefing.ValidateProvenanceDocument},
 	{".sql", sqlscript.ValidateScript},
+	{path.Base(optstats.FileName), validateOptimizerStatistics},
+}
+
+// validateOptimizerStatistics refuses a statistics file the compiler would
+// refuse. The compiler reads it strictly (optstats.Decode: format, version, exact
+// keys, valid counts) and a file it cannot read fails every compile of the
+// workspace, the next deployment's start-up compile included. The seventh row,
+// added on 2026-10-26 when the IDE began listing the file (wsfile/sections.go,
+// `jet_rules`): listing it made it editable, and a save checked only that it
+// was a JSON object. As a suffix it covers each statistics process's own file,
+// `<process>.optimizer_statistics.json`, too.
+func validateOptimizerStatistics(content string) []wsvalidate.Finding {
+	if _, err := optstats.Decode(strings.NewReader(content)); err != nil {
+		return []wsvalidate.Finding{{
+			Severity: wsvalidate.Error,
+			Code:     "optimizer_statistics",
+			Message:  err.Error(),
+		}}
+	}
+	return nil
 }
 
 // validatorFor returns the most specific match, or nil.
@@ -113,6 +136,12 @@ func ValidateFlowDocumentForTest(content string) []wsvalidate.Finding {
 //
 // Returns nil when the file may be written.
 func checkWorkspaceFile(fileName, content string) error {
+	// A file the IDE shows read-only is refused here too, so that the editor's
+	// read-only state is not the only thing between a direct request and the
+	// write (wsfile.ReadOnlySuffixes, 2026-10-27).
+	if wsfile.IsReadOnly(fileName) {
+		return fmt.Errorf("%s is read-only in the workspace IDE; edit it in the workspace repository", fileName)
+	}
 	// The JSON well-formedness check is a precondition of the JSON validators
 	// and applies to every `.json` file, row or no row — a malformed one is
 	// refused whatever its suffix. **It used to be the gate on the whole

@@ -48,7 +48,8 @@ const artifactPath = fileURLToPath(new URL("./table.schema.json", import.meta.ur
 const tablesDir = fileURLToPath(new URL("./tables/", import.meta.url));
 
 /**
- * The other half of the corpus, since the eleven flows moved to workspace assets.
+ * The other half of the corpus, since the eleven flows moved to workspace assets
+ * (X.5, 2026-08-26).
  *
  * A table document a JetStore flow draws is installed into a workspace by
  * `install_workspace_assets` and read from there by `FlowStore.loadTables`; a
@@ -650,12 +651,14 @@ describe("pipelineExecStatusTable, the table track C and track F share", () => {
     expect(doc.where).toEqual([{ column: "source_period_key", joinWith: "source_period.key" }]);
   });
 
-  it("keeps the seven action-bar buttons in order and the five row buttons apart", () => {
+  it("keeps the eight action-bar buttons in order and the five row buttons apart", () => {
     if (doc.source !== "query") return;
     // **Seven since 2026-10-01**: `putSchemaEvent` is appended after
     // `clearHomeFilters`, which is "right of Clear Filters" in the report's words
     // (`jetstore_maintenance_02` `D01`, task `AD.3`). The document is
     // hand-maintained since `AD.2`, so this is an edit rather than a translation.
+    // **Eight since 2026-11-05**: *Check Pending* follows *Put Schema Event*
+    // (jetstore_maintenance JM-062).
     expect((doc.actions ?? []).map((a) => [a.key, a.action])).toEqual([
       ["startPipeline", "showScreen"],
       ["refreshTable", "refreshTable"],
@@ -664,6 +667,7 @@ describe("pipelineExecStatusTable, the table track C and track F share", () => {
       ["setRequestIdFilters", "setRequestIdFilter"],
       ["clearHomeFilters", "clearHomeFilters"],
       ["putSchemaEvent", "showDialog"],
+      ["checkPendingTasks", "doAction"],
     ]);
     expect((doc.secondRowActions ?? []).map((a) => a.key)).toEqual([
       "viewStatusDetails",
@@ -697,7 +701,10 @@ describe("pipelineExecStatusTable, the table track C and track F share", () => {
     // **Three since 2026-10-01**: the third row's *Get Run Manifest* and *Get
     // Schema Event* (`jetstore_maintenance_02` `D04`, `AE.4`, `AE.5`) run actions
     // too, and `actionNamesOf` reads them through `actionRowsOf` (`AE.1`).
-    expect(actionNamesOf(doc)).toEqual(["getRunManifest", "getSchemaEvent", "resubmitPipeline"]);
+    //
+    // **Four since 2026-11-05**, and the fourth is the first on the *first* row:
+    // *Check Pending* runs `checkPendingTasks` (jetstore_maintenance JM-062).
+    expect(actionNamesOf(doc)).toEqual(["checkPendingTasks", "getRunManifest", "getSchemaEvent", "resubmitPipeline"]);
     if (doc.source !== "query") return;
     expect((doc.secondRowActions ?? []).find((a) => a.action === "showDialog")?.configForm).toBe(
       "showFailureDetailsDialog",

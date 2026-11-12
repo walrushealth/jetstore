@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/artisoft-io/jetstore/jets/awsi"
+	"github.com/artisoft-io/jetstore/jets/dblogin"
 	"github.com/artisoft-io/jetstore/jets/jetrules/rete"
 	"github.com/artisoft-io/jetstore/jets/migratedb"
 	"github.com/artisoft-io/jetstore/jets/utils"
@@ -23,7 +24,7 @@ import (
 // JETS_DSN_JSON_VALUE
 // JETS_DSN_SECRET
 // JETS_DSN_URI_VALUE
-// JETS_REGION
+// JETS_REGION (needed only to read JETS_DSN_SECRET)
 // JETS_SCHEMA_FILE (default: jets_schema.json)
 // JETS_INIT_DB_SCRIPT path to jets_init_db.sql files (not workspace specific)
 // WORKSPACE Workspace currently in use
@@ -71,12 +72,50 @@ func doJob() error {
 		if err != nil {
 			return err
 		}
+		// A table the migration added took the default privileges, which open
+		// it to the IDE login; this closes the security tables again and
+		// withholds a new secret column, as the apiserver does at its start.
+		if err = dblogin.Ensure(context.Background(), dbpool); err != nil {
+			return err
+		}
+	}
+
+	// The workspace's own init scripts run on the IDE login (package dblogin),
+	// which may write every jetsapi table but the security tables (users, roles,
+	// role_capability, secret_rotation). A workspace is edited from the IDE and
+	// compiled from it, so its scripts get no more than the Query Tool does.
+	// JetStore's own scripts (jets_init_db.sql, the release scripts) stay on
+	// dbpool: they are what seeds the roles. Opened on first use, after the
+	// migration, so the grants cover the tables it added.
+	var wsPool *pgxpool.Pool
+	defer func() {
+		if wsPool != nil {
+			wsPool.Close()
+		}
+	}()
+	workspacePool := func() (*pgxpool.Pool, error) {
+		if wsPool != nil {
+			return wsPool, nil
+		}
+		if err := dblogin.Ensure(context.Background(), dbpool); err != nil {
+			return nil, err
+		}
+		p, err := dblogin.Open(context.Background(), dbpool, dblogin.IDE, 2)
+		if err != nil {
+			return nil, err
+		}
+		wsPool = p
+		return p, nil
 	}
 
 	// Perform the base workspace initialozation
 	if *initBaseWorkspaceDb {
 		log.Println("Initialize jetsapi database using base initalization script only")
-		err = InitializeBaseJetsapiDb(dbpool, &jetsDbInitPath)
+		ws, err := workspacePool()
+		if err != nil {
+			return err
+		}
+		err = InitializeBaseJetsapiDb(dbpool, ws, &jetsDbInitPath)
 		if err != nil {
 			return err
 		}
@@ -85,14 +124,22 @@ func doJob() error {
 	// Initialize jetsapi database with all client-specific initalization only
 	if *initWorkspaceDb {
 		log.Println("Initialize jetsapi database with all client-specific initalization only")
-		err = InitializeJetsapiDb(dbpool, &jetsDbInitPath)
+		ws, err := workspacePool()
+		if err != nil {
+			return err
+		}
+		err = InitializeJetsapiDb(ws, &jetsDbInitPath)
 		if err != nil {
 			return err
 		}
 	}
 	if len(*clients) > 0 {
 		log.Println("Initialize jetsapi database with workspace-specific initalization for clients", *clients)
-		err = InitializeJetsapiDb4Clients(dbpool, &jetsDbInitPath, clients)
+		ws, err := workspacePool()
+		if err != nil {
+			return err
+		}
+		err = InitializeJetsapiDb4Clients(ws, &jetsDbInitPath, clients)
 		if err != nil {
 			return err
 		}
@@ -148,38 +195,72 @@ func doJob() error {
 	return nil
 }
 
-func main() {
-	utils.UseJetStoreLogger()
-	log.Println("CMD LINE ARGS:", os.Args[1:])
-	flag.Parse()
+// dsnSources are the places update_db may take its connection string from, in
+// the order it tries them.
+type dsnSources struct {
+	dsn            string // JETS_DSN_URI_VALUE
+	dsnJson        string // JETS_DSN_JSON_VALUE
+	awsDsnSecret   string // JETS_DSN_SECRET
+	awsRegion      string // JETS_REGION
+	usingSshTunnel bool
+	poolSize       int
+}
 
-	// validate command line arguments
-	hasErr := false
+// resolveDsn returns the connection string and the argument errors met on the
+// way. The region is needed only to read the secret from AWS: a DSN given
+// directly, as JETS_DSN_URI_VALUE or JETS_DSN_JSON_VALUE, needs no region, so
+// a local run against a scratch database does not have to invent one.
+func resolveDsn(src dsnSources,
+	fromJson func(string, bool, int) (string, error),
+	fromSecret func(string, bool, int) (string, error)) (string, []string) {
+
 	var errMsg []string
-	var err error
-	if awsRegion == "" {
-		hasErr = true
-		errMsg = append(errMsg, "aws region must be provided.")
-	}
-	if dsn == "" && dsnJson != "" {
-		dsn, err = awsi.GetDsnFromJson(dsnJson, *usingSshTunnel, dbPoolSize)
+	dsn := src.dsn
+	if dsn == "" && src.dsnJson != "" {
+		var err error
+		dsn, err = fromJson(src.dsnJson, src.usingSshTunnel, src.poolSize)
 		if err != nil {
 			log.Printf("while calling GetDsnFromJson: %v", err)
 			dsn = ""
 		}
 	}
 	if dsn == "" {
-		// Get the dsn from the aws secret
-		dsn, err = awsi.GetDsnFromSecret(awsDsnSecret, *usingSshTunnel, dbPoolSize)
-		if err != nil {
-			hasErr = true
-			errMsg = append(errMsg, fmt.Sprintf("while getting dsn from JETS_DSN_SECRET: %v", err))
+		// Get the dsn from the aws secret, which needs the region
+		if src.awsRegion == "" {
+			errMsg = append(errMsg,
+				"aws region (JETS_REGION) must be provided to read the dsn from JETS_DSN_SECRET; "+
+					"or provide JETS_DSN_URI_VALUE or JETS_DSN_JSON_VALUE.")
+		} else {
+			var err error
+			dsn, err = fromSecret(src.awsDsnSecret, src.usingSshTunnel, src.poolSize)
+			if err != nil {
+				errMsg = append(errMsg, fmt.Sprintf("while getting dsn from JETS_DSN_SECRET: %v", err))
+			}
 		}
 	}
 	if dsn == "" {
-		hasErr = true
 		errMsg = append(errMsg, "Connection string must be provided via env var")
 	}
+	return dsn, errMsg
+}
+
+func main() {
+	utils.UseJetStoreLogger()
+	log.Println("CMD LINE ARGS:", os.Args[1:])
+	flag.Parse()
+
+	// validate command line arguments
+	var err error
+	var errMsg []string
+	dsn, errMsg = resolveDsn(dsnSources{
+		dsn:            dsn,
+		dsnJson:        dsnJson,
+		awsDsnSecret:   awsDsnSecret,
+		awsRegion:      awsRegion,
+		usingSshTunnel: *usingSshTunnel,
+		poolSize:       dbPoolSize,
+	}, awsi.GetDsnFromJson, awsi.GetDsnFromSecret)
+	hasErr := len(errMsg) > 0
 	if os.Getenv("WORKSPACES_HOME") == "" || os.Getenv("WORKSPACE") == "" {
 		hasErr = true
 		errMsg = append(errMsg, "Workspace env WORKSPACES_HOME & WORKSPACE must be provided")

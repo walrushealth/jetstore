@@ -100,6 +100,10 @@ func rutDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connecting to the test database: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	// Reads run on the reader login (readOnlyTx), as they do after an apiserver start.
+	if err = EnsureRestrictedLogins(ctx, pool); err != nil {
+		t.Fatalf("setting up the restricted logins: %v", err)
+	}
 	return pool
 }
 

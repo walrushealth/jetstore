@@ -1,8 +1,7 @@
 /**
  * @vitest-environment jsdom
  *
- * **A workspace's README opens read-only.** jetstore_maintenance_02 `AL.1`,
- * 2026-10-27.
+ * **A workspace's README opens read-only.** 2026-10-27.
  *
  * The server lists a workspace's `.md` files and marks each node `read_only`
  * (`wsfile.ReadOnlySuffixes`), and refuses a save of one. This pins the
@@ -65,8 +64,8 @@ function stubServer(saves: string[]) {
       return new Response(
         JSON.stringify({
           token: "t0",
-          name: "Michel",
-          user_email: "michel@artisoft.io",
+          name: "Test User",
+          user_email: "user@example.com",
           is_admin: false,
           capabilities: [WORKSPACE_IDE],
         }),
@@ -100,7 +99,7 @@ function stubServer(saves: string[]) {
 
 async function mount(saves: string[]) {
   const api = new ApiClient("", stubServer(saves));
-  await api.login("michel@artisoft.io", "pw");
+  await api.login("user@example.com", "pw");
   render(
     <MemoryRouter initialEntries={["/workspace"]}>
       <Routes>

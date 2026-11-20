@@ -93,13 +93,67 @@ register_callbacks_for_aggregate(ReteSession * rs, int vertex, rdf::r_index rhs,
   return 0;
 }
 
+// The properties an aggregate's config names.
+// --------------------------------------------------------------------------------------
+// jets:entity_property and jets:value_property name the properties an aggregate walks,
+// (?s entityProperty ?o).(?o valueProperty ?v), so each must be a resource. A literal
+// there, the text "hasItem" for the property hasItem, was looked up as a property,
+// matched no triple, and the aggregate was null with nothing said why, in all five
+// aggregates until 2026-11-14.
+inline bool
+names_a_property(rdf::r_index p)
+{
+  return p != nullptr and p->which() == rdf::rdf_named_resource_t;
+}
+
+// The configuration error of min_of, max_of, sum_values and join_values when the config
+// gives a literal for either property. A property that is absent is not checked here:
+// which of the two an operator needs differs, and each says so itself. sorted_head,
+// which needs both and jets:operator, has its own message naming all three.
+inline void
+check_aggregate_config_properties(char const* op, rdf::r_index config,
+  rdf::r_index objp, rdf::r_index datap)
+{
+  if((objp and not names_a_property(objp)) or (datap and not names_a_property(datap))) {
+    RETE_EXCEPTION(
+      "Invalid config for "<<op<<": jets:entity_property and jets:value_property "
+      "must be resources (properties), not literals; config "<<config<<" has "
+      "jets:entity_property "<<objp<<" and jets:value_property "<<datap);
+  }
+}
+
+// The two operands of an aggregate as the graph's resources.
+// --------------------------------------------------------------------------------------
+// The left operand is the subject and the right one the property or the configuration,
+// and each must name a resource the session or the rule base holds. Every resource a
+// rule names is created when the rule base is loaded (volatile ones as _0:name), and a
+// variable is bound to a node of a triple, so a name that maps to nothing is one built
+// by an expression and never asserted, create_resource("x") passed straight in, say: a
+// configuration error, since no triple can hold it. sorted_head, sum_values and
+// join_values always threw it; min_of and max_of gave null, silently, until 2026-11-14.
+inline std::pair<rdf::r_index, rdf::r_index>
+get_aggregate_operands(char const* op, rdf::RManager * rmgr,
+  rdf::NamedResource const& lhs, rdf::NamedResource const& rhs)
+{
+  auto * l = rmgr->get_resource(lhs.name);
+  auto * r = rmgr->get_resource(rhs.name);
+  if(not l or not r) {
+    RETE_EXCEPTION(
+      "Invalid argument for "<<op<<", lhs and rhs must "
+      "be existing resources, we have "<<lhs<<", and "<<rhs<<" which map to "<<
+      l<<", and "<<r
+    );
+  }
+  return {l, r};
+}
+
 // NullWhenOutOfRange: + - * / on two integer types convert the right operand to the left
 // operand's type with boost::numeric_cast, which throws when it does not fit (int32 plus
 // a large int64, uint32 plus -1). The exception failed the session; the operation is null
-// instead, and the rule's consequent sees no value (Q-85, I-134, 2026-10-23), as an
-// integer division by zero has been since Q-69. Each of the four operators below is its
+// instead, and the rule's consequent sees no value (2026-10-23), as an
+// integer division by zero already was. Each of the four operators below is its
 // Impl wrapped in this, and so is to_int, whose number out of int32's range threw the
-// same way (BL.1b); the Impl's overloads are unchanged.
+// same way; the Impl's overloads are unchanged.
 template<class Op>
 struct NullWhenOutOfRange: public Op
 {
@@ -116,16 +170,16 @@ struct NullWhenOutOfRange: public Op
 
 // A type mismatch is null: + - * / and abs give null for operands they do not take, a
 // number with text, a named resource, a blank node or null, either way round, or two
-// operands neither of which they take (Q-93, 2026-10-24). Each catch-all below says so.
+// operands neither of which they take (2026-10-24). Each catch-all below says so.
 // Until then a catch-all gave null only with no beta row, as the shared tables call a
-// visitor, and threw in a session's rule, which failed the session (I-184); Q-85 and
-// BL.1b had made a few of those mixes null one overload at a time. Text first in + is
+// visitor, and threw in a session's rule, which failed the session; earlier
+// changes had made a few of those mixes null one overload at a time. Text first in + is
 // not a mismatch: it concatenates, by design.
 
-// An integer quotient. Division by zero is null (Q-69), and so is the minimum signed
+// An integer quotient. Division by zero is null, and so is the minimum signed
 // integer divided by -1, whose quotient does not fit its type: it raised SIGFPE, which
-// killed the process, for int32 and int64 and through the mixed integer types (Q-85,
-// I-126, 2026-10-23).
+// killed the process, for int32 and int64 and through the mixed integer types
+// (2026-10-23).
 template<class L, class T>
 inline RDFTTYPE
 integer_quotient(T lhs, T rhs)
@@ -147,7 +201,7 @@ struct AddVisitorImpl: public boost::static_visitor<RDFTTYPE>, public NoCallback
 {
   AddVisitorImpl(ReteSession * rs, BetaRow const* br): rs(rs), br(br) {}
   AddVisitorImpl(): rs(nullptr), br(nullptr) {}
-  template<class T, class U> RDFTTYPE operator()(T, U) const {return rdf::Null();}   // a type mismatch (Q-93)
+  template<class T, class U> RDFTTYPE operator()(T, U) const {return rdf::Null();}   // a type mismatch
 
   RDFTTYPE operator()(rdf::LInt32  lhs, rdf::LInt32  rhs)const{return rdf::LInt32{lhs.data+rhs.data};}
   RDFTTYPE operator()(rdf::LInt32  lhs, rdf::LUInt32 rhs)const{return rdf::LInt32{lhs.data+boost::numeric_cast<int32_t>(rhs.data)};}
@@ -222,7 +276,7 @@ struct AddVisitorImpl: public boost::static_visitor<RDFTTYPE>, public NoCallback
 struct SubsVisitorImpl: public boost::static_visitor<RDFTTYPE>, public NoCallbackNeeded
 {
   SubsVisitorImpl(ReteSession * rs, BetaRow const* br): rs(rs), br(br) {}
-  template<class T, class U> RDFTTYPE operator()(T, U) const {return rdf::Null();}   // a type mismatch (Q-93)
+  template<class T, class U> RDFTTYPE operator()(T, U) const {return rdf::Null();}   // a type mismatch
 
   RDFTTYPE operator()(rdf::LInt32  lhs, rdf::LInt32  rhs)const{return rdf::LInt32{lhs.data-rhs.data};}
   RDFTTYPE operator()(rdf::LInt32  lhs, rdf::LUInt32 rhs)const{return rdf::LInt32{lhs.data-boost::numeric_cast<int32_t>(rhs.data)};}
@@ -279,7 +333,7 @@ struct SubsVisitorImpl: public boost::static_visitor<RDFTTYPE>, public NoCallbac
 struct MultVisitorImpl: public boost::static_visitor<RDFTTYPE>, public NoCallbackNeeded
 {
   MultVisitorImpl(ReteSession * rs, BetaRow const* br): rs(rs), br(br) {}
-  template<class T, class U> RDFTTYPE operator()(T, U) const {return rdf::Null();}   // a type mismatch (Q-93)
+  template<class T, class U> RDFTTYPE operator()(T, U) const {return rdf::Null();}   // a type mismatch
 
   RDFTTYPE operator()(rdf::LInt32  lhs, rdf::LInt32  rhs)const{return rdf::LInt32{lhs.data*rhs.data};}
   RDFTTYPE operator()(rdf::LInt32  lhs, rdf::LUInt32 rhs)const{return rdf::LInt32{lhs.data*boost::numeric_cast<int32_t>(rhs.data)};}
@@ -317,13 +371,13 @@ struct MultVisitorImpl: public boost::static_visitor<RDFTTYPE>, public NoCallbac
 
 // DivVisitor
 // --------------------------------------------------------------------------------------
-// An integer divided by an integer zero is null (Q-69); until 2026-10 it raised SIGFPE,
+// An integer divided by an integer zero is null; until 2026-10 it raised SIGFPE,
 // which killed the process. A division with a double operand follows IEEE: +inf, -inf,
 // and NaN for 0/0. The retired Go engine followed the same table.
 struct DivVisitorImpl: public boost::static_visitor<RDFTTYPE>, public NoCallbackNeeded
 {
   DivVisitorImpl(ReteSession * rs, BetaRow const* br): rs(rs), br(br) {}
-  template<class T, class U> RDFTTYPE operator()(T, U) const {return rdf::Null();}   // a type mismatch (Q-93)
+  template<class T, class U> RDFTTYPE operator()(T, U) const {return rdf::Null();}   // a type mismatch
 
   RDFTTYPE operator()(rdf::LInt32  lhs, rdf::LInt32  rhs)const{return integer_quotient<rdf::LInt32>(lhs.data, rhs.data);}
   RDFTTYPE operator()(rdf::LInt32  lhs, rdf::LUInt32 rhs)const{if(rhs.data == 0) return rdf::Null(); return rdf::LInt32{lhs.data/boost::numeric_cast<int32_t>(rhs.data)};}
@@ -369,7 +423,7 @@ using DivVisitor  = NullWhenOutOfRange<DivVisitorImpl>;
 struct AbsVisitor: public boost::static_visitor<RDFTTYPE>, public NoCallbackNeeded
 {
   AbsVisitor(ReteSession * rs, BetaRow const* br): rs(rs), br(br) {}
-  template<class T> RDFTTYPE operator()(T) const {return rdf::Null();}   // a type mismatch (Q-93)
+  template<class T> RDFTTYPE operator()(T) const {return rdf::Null();}   // a type mismatch
 
   RDFTTYPE operator()(rdf::LInt32  lhs)const{return rdf::LInt32{abs(lhs.data)};}
   RDFTTYPE operator()(rdf::LUInt32 lhs)const{return lhs;}
@@ -505,7 +559,7 @@ struct ApplyMinMaxVisitor
                     tie_break_less(currentObj, resultObj)) {
             // equal values, by the rules' own == (EqVisitor): the object first in the
             // tie-break order, whatever the order they are met in. Until 2026-10 the first
-            // met won (I-33). A tie is equality, not "neither is greater", which is not
+            // met won. A tie is equality, not "neither is greater", which is not
             // transitive: a NaN or an infinity never ties, and values that cannot be
             // compared (text and a number) keep the first met, a known limit.
             resultObj = currentObj;
@@ -533,13 +587,25 @@ doMinMaxOf(ReteSession * rs, rdf::r_index lhs, rdf::r_index rhs, bool doMin)
   auto * sess = rs->rdf_session();
   auto const* jr = sess->rmgr()->jets();
   auto objp  = sess->get_object(rhs, jr->jets__entity_property);
-  // if objp == null then mode is min/max of a multi value property
-  if (objp == nullptr) {
+  auto datap = sess->get_object(rhs, jr->jets__value_property);
+  // rhs carries neither property: it is not a config but the multi value property
+  // itself, min/max ?v in (lhs, rhs, ?v)
+  if (objp == nullptr and datap == nullptr) {
     ApplyMinMaxVisitor av(rs, doMin, true);
     return av(lhs, rhs);
   }
-  // Mode is min/max of multi value obj property based on values of datap
-  auto datap = sess->get_object(rhs, jr->jets__value_property);
+  // rhs is a config: its properties must be resources, and jets:entity_property is
+  // needed. A config with jets:value_property alone was read as the multi value
+  // property itself, (lhs, config, ?v), and was null, silently, until 2026-11-14
+  char const* op = doMin ? "min_of" : "max_of";
+  check_aggregate_config_properties(op, rhs, objp, datap);
+  if (objp == nullptr) {
+    RETE_EXCEPTION(
+      "Invalid config for "<<op<<": config "<<rhs<<" has jets:value_property and no "
+      "jets:entity_property; a config needs jets:entity_property, with or without "
+      "jets:value_property");
+  }
+  // Mode is min/max of multi value obj property, based on values of datap when present
   ApplyMinMaxVisitor av(rs, doMin, false);
   return av(lhs, objp, datap);
 }
@@ -563,8 +629,9 @@ struct MaxOfVisitor: public boost::static_visitor<RDFTTYPE>, public ReadsGraph
   {
     if(not this->rs) return rdf::Null();
     auto * sess = this->rs->rdf_session();
-    auto pr = get_resources(sess->rmgr(), std::move(lhs.name), std::move(rhs.name));
-    if(not pr.first or not pr.second) return rdf::Null();
+    // An operand that is not an existing resource throws, as for sum_values (until
+    // 2026-11-14 it was null, silently): see get_aggregate_operands
+    auto pr = get_aggregate_operands("max_of", sess->rmgr(), lhs, rhs);
     return doMinMaxOf(this->rs, pr.first, pr.second, false);
   }
 
@@ -592,8 +659,9 @@ struct MinOfVisitor: public boost::static_visitor<RDFTTYPE>, public ReadsGraph
   {
     if(not this->rs) return rdf::Null();
     auto * sess = this->rs->rdf_session();
-    auto pr = get_resources(sess->rmgr(), std::move(lhs.name), std::move(rhs.name));
-    if(not pr.first or not pr.second) return rdf::Null();
+    // An operand that is not an existing resource throws, as for sum_values (until
+    // 2026-11-14 it was null, silently): see get_aggregate_operands
+    auto pr = get_aggregate_operands("min_of", sess->rmgr(), lhs, rhs);
     return doMinMaxOf(this->rs, pr.first, pr.second, true);
   }
 
@@ -620,22 +688,19 @@ struct SortedHeadVisitor: public boost::static_visitor<RDFTTYPE>, public ReadsGr
   RDFTTYPE operator()(rdf::NamedResource lhs, rdf::NamedResource rhs)const
   {
     auto * sess = this->rs->rdf_session();
-    auto pr = get_resources(sess->rmgr(), std::move(lhs.name), std::move(rhs.name));
-    if(not pr.first or not pr.second) {
-      RETE_EXCEPTION(
-        "Invalid argument for sorted_head, must lhs and rhs must "
-        "be existing resources, we have "<<lhs<<", and "<<rhs<<" which map to "<<
-        pr.first<<", and "<<pr.second
-      );
-    }
+    auto pr = get_aggregate_operands("sorted_head", sess->rmgr(), lhs, rhs);
     auto const* jr = sess->rmgr()->jets();
     auto objp  = sess->get_object(pr.second, jr->jets__entity_property);
     auto datap = sess->get_object(pr.second, jr->jets__value_property);
     auto op    = sess->get_object(pr.second, jr->jets__operator);
     // op must be text literal with value "<" or ">"
-    bool err = objp==nullptr or datap==nullptr;
+    // objp and datap must be resources, the properties walked: a literal there (until
+    // 2026-11-14) matched no triple and gave null silently. See names_a_property
+    bool err = not names_a_property(objp) or not names_a_property(datap);
     bool is_min = true;
-    if(op->which() == rdf::rdf_literal_string_t) {
+    // op is null when the config has no jets:operator: the config error below, not a
+    // null dereference (until 2026-11-13 it crashed the process)
+    if(op != nullptr and op->which() == rdf::rdf_literal_string_t) {
       auto const& opv = boost::get<rdf::LString>(op)->data;
       if(opv == "<") {
         is_min = true;
@@ -650,7 +715,8 @@ struct SortedHeadVisitor: public boost::static_visitor<RDFTTYPE>, public ReadsGr
     if(err) {
       RETE_EXCEPTION(
         "Invalid config for sorted_head, must have "
-        "jets:operator, jets:entity_property, and jets:data_property set, and "
+        "jets:operator, jets:entity_property, and jets:value_property set, "
+        "jets:entity_property and jets:value_property must be resources (properties), not literals, and "
         "jets:operator must be a text literal with value '<' or '>' (single char text)"
       );
     }
@@ -807,22 +873,26 @@ struct SumValuesVisitor: public boost::static_visitor<RDFTTYPE>, public ReadsGra
   RDFTTYPE operator()(rdf::NamedResource lhs, rdf::NamedResource rhs)const
   {
     auto * sess = this->rs->rdf_session();
-    auto pr = get_resources(sess->rmgr(), std::move(lhs.name), std::move(rhs.name));
-    if(not pr.first or not pr.second) {
-      RETE_EXCEPTION(
-        "Invalid argument for sum_values, must lhs and rhs must "
-        "be existing resources, we have "<<lhs<<", and "<<rhs<<" which map to "<<
-        pr.first<<", and "<<pr.second
-      );
-    }
+    auto pr = get_aggregate_operands("sum_values", sess->rmgr(), lhs, rhs);
     ApplySumValuesVisitor av(this->rs);
     auto const* jr = sess->rmgr()->jets();
     auto datap = sess->get_object(pr.second, jr->jets__value_property);
-    if(not datap) {
+    auto objp = sess->get_object(pr.second, jr->jets__entity_property);
+    if(objp or datap) {
+      // rhs is a config: its properties must be resources, and jets:entity_property
+      // needs jets:value_property, as for join_values. A config with
+      // jets:entity_property alone summed (lhs, objp, ?o).(?o, config, ?v), which is
+      // nothing, and was null, silently, until 2026-11-14
+      check_aggregate_config_properties("sum_values", pr.second, objp, datap);
+      if(not datap) {
+        RETE_EXCEPTION(
+          "Invalid config for sum_values: config "<<pr.second<<" has jets:entity_property "
+          "and no jets:value_property");
+      }
+    } else {
       // use rhs as data property, i.e. do the sum of ?v in (lhs, rhs, ?v)
       datap = pr.second;
     }
-    auto objp = sess->get_object(pr.second, jr->jets__entity_property);
     return av(pr.first, objp, datap);
   }
 
@@ -974,14 +1044,7 @@ struct JoinValuesVisitor: public boost::static_visitor<RDFTTYPE>, public ReadsGr
   RDFTTYPE operator()(rdf::NamedResource lhs, rdf::NamedResource rhs)const
   {
     auto * sess = this->rs->rdf_session();
-    auto pr = get_resources(sess->rmgr(), std::move(lhs.name), std::move(rhs.name));
-    if(not pr.first or not pr.second) {
-      RETE_EXCEPTION(
-        "Invalid argument for join_values, must lhs and rhs must "
-        "be existing resources, we have "<<lhs<<", and "<<rhs<<" which map to "<<
-        pr.first<<", and "<<pr.second
-      );
-    }
+    auto pr = get_aggregate_operands("join_values", sess->rmgr(), lhs, rhs);
     auto const* jr = sess->rmgr()->jets();
     // The separator is optional, defaulting to ", ".
     std::string separator{", "};
@@ -995,9 +1058,12 @@ struct JoinValuesVisitor: public boost::static_visitor<RDFTTYPE>, public ReadsGr
     ApplyJoinValuesVisitor av(this->rs, std::move(separator));
     // Three config forms, stated explicitly rather than fallen into, since a config
     // carrying jets:entity_property and no jets:value_property is a misconfiguration
-    // that sum_values silently turns into an empty result.
+    // (which sum_values, until 2026-11-14, silently turned into a null result).
     auto objp = sess->get_object(pr.second, jr->jets__entity_property);
     auto datap = sess->get_object(pr.second, jr->jets__value_property);
+    // either property, when present, must be a resource: a literal gave null, silently,
+    // until 2026-11-14
+    check_aggregate_config_properties("join_values", pr.second, objp, datap);
     if(objp) {
       // (lhs, objp, ?o).(?o, datap, ?v) -- objp non functional, datap functional
       if(not datap) {
@@ -1036,15 +1102,15 @@ struct JoinValuesVisitor: public boost::static_visitor<RDFTTYPE>, public ReadsGr
 
 // ToIntVisitor
 // --------------------------------------------------------------------------------------
-// to_int and to_double of what they cannot read are null (Q-93, 2026-10-24): text that
+// to_int and to_double of what they cannot read are null (2026-10-24): text that
 // does not read as their type, empty or blank text, null, a named resource, a blank node
-// or a date; and to_int of a NaN. Until then each threw in a session's rule (I-185),
+// or a date; and to_int of a NaN. Until then each threw in a session's rule,
 // lexical_cast's bad_lexical_cast or "NULL arguments for to_int", and a NaN was converted
-// to int32 by undefined behaviour, which numeric_cast does not check (I-186).
+// to int32 by undefined behaviour, which numeric_cast does not check.
 struct ToIntVisitorImpl: public boost::static_visitor<RDFTTYPE>, public NoCallbackNeeded
 {
   ToIntVisitorImpl(ReteSession * rs, BetaRow const* br): rs(rs), br(br) {}
-  template<class T> RDFTTYPE operator()(T) const {return rdf::Null();}   // nothing to read (Q-93)
+  template<class T> RDFTTYPE operator()(T) const {return rdf::Null();}   // nothing to read
 
   RDFTTYPE operator()(rdf::LInt32  lhs)const{return lhs;}
   RDFTTYPE operator()(rdf::LUInt32 lhs)const{return rdf::LInt32{boost::numeric_cast<int32_t>(lhs.data)};}
@@ -1067,7 +1133,7 @@ struct ToIntVisitorImpl: public boost::static_visitor<RDFTTYPE>, public NoCallba
   BetaRow const* br;
 };
 
-// a number out of int32's range is null (Q-85, BL.1b)
+// a number out of int32's range is null
 using ToIntVisitor = NullWhenOutOfRange<ToIntVisitorImpl>;
 
 // ToDoubleVisitor
@@ -1075,7 +1141,7 @@ using ToIntVisitor = NullWhenOutOfRange<ToIntVisitorImpl>;
 struct ToDoubleVisitor: public boost::static_visitor<RDFTTYPE>, public NoCallbackNeeded
 {
   ToDoubleVisitor(ReteSession * rs, BetaRow const* br): rs(rs), br(br) {}
-  template<class T> RDFTTYPE operator()(T) const {return rdf::Null();}   // nothing to read (Q-93)
+  template<class T> RDFTTYPE operator()(T) const {return rdf::Null();}   // nothing to read
 
   RDFTTYPE operator()(rdf::LInt32  lhs)const{return rdf::LDouble{boost::numeric_cast<double_t>(lhs.data)};}
   RDFTTYPE operator()(rdf::LUInt32 lhs)const{return rdf::LDouble{boost::numeric_cast<double_t>(lhs.data)};}

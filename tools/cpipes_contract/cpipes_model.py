@@ -1,6 +1,6 @@
-"""The cpipes contract - THE SOURCE OF TRUTH for the contract claims (B.10).
+"""The cpipes contract - THE SOURCE OF TRUTH for the contract claims.
 
-Since the B.10 flip, this Pydantic v2 model is where the contract is edited:
+Since the source-of-truth flip, this Pydantic v2 model is where the contract is edited:
 which fields exist per operator token, which are required, their value ranges,
 and their descriptions. The matrix CSVs remain the review artifact and the
 audit/Go-binding record, regenerated FROM this file:
@@ -9,7 +9,7 @@ audit/Go-binding record, regenerated FROM this file:
     python -m cpipes_contract reflect --check  # the divergence guard (CI)
 
 The `generate` command is the bootstrap projection that first produced this
-file from the reviewed matrix (B.9) - running it again OVERWRITES edits made
+file from the reviewed matrix - running it again OVERWRITES edits made
 here. Engine-applied defaults are noted in the descriptions and deliberately
 NOT materialised as Pydantic defaults, so a dumped document stays minimal and
 the wire format unchanged.
@@ -329,15 +329,15 @@ class CsvSourceSpecBase(_Base):
     """CsvSourceSpec: JetStore s3 data source from cpipes stage pipeline"""
     class_name: str | None = Field(default=None, description="Class name used when loading metadata sources for jetrules.")
     comment: str | None = Field(default=None, description="Free text for the reader; ignored by JetStore.")
-    compression: Literal["none", "snappy"] | None = Field(default=None, description="Compression: none, snappy")
     delimiter: int | None = Field(default=None, description="Field delimiter as a code point; default ',' (44). Engine default: 44 (builder).")
-    format: Literal["csv", "headerless_csv"] | None = Field(default=None, description="Format: csv, headerless_csv")
     make_empty_source_when_no_files_found: bool | None = Field(default=None, description="MakeEmptyWhenNoFile: Do not make an error when no files are found, make empty source. Default: generate an error when no files are found in s3.")
 
 
 class CsvSourceSpecCpipes(CsvSourceSpecBase):
     """JetStore s3 data source from cpipes stage pipeline"""
     type: Literal["cpipes"] = Field(description="The source kind. Range: cpipes, csv_file.")
+    compression: Literal["none", "snappy"] | None = Field(default=None, description="Compression: none, snappy. Unset reads a stage file, which is snappy-compressed. Engine default: snappy (builder).")
+    format: Literal["csv", "headerless_csv"] | None = Field(default=None, description="Format: csv, headerless_csv. Unset reads a stage file, which has no header row. Engine default: headerless_csv (builder).")
     jets_partition: str | None = Field(default=None, description="Partition label to read (type cpipes).")
     process_name: str | None = Field(default=None, description="Process name of the cpipes pipeline to read from (type cpipes).")
     read_step_id: str | None = Field(default=None, description="Step id in the stage location to read from (type cpipes).")
@@ -347,7 +347,9 @@ class CsvSourceSpecCpipes(CsvSourceSpecBase):
 class CsvSourceSpecCsvFile(CsvSourceSpecBase):
     """JetStore s3 data source from file key"""
     type: Literal["csv_file"] = Field(description="The source kind. Range: cpipes, csv_file.")
+    compression: Literal["none", "snappy"] | None = Field(default=None, description="Compression: none, snappy. Unset reads an object named in full as uncompressed. Engine default: none (builder).")
     csv_source_file_key: str = Field(description="S3 file key of the csv file (type csv_file).")
+    format: Literal["csv", "headerless_csv"] | None = Field(default=None, description="Format: csv, headerless_csv. Unset reads an object named in full as a csv carrying its header row. Engine default: csv (builder).")
 
 
 class DateFormatLookupSpec(_Base):
@@ -642,6 +644,7 @@ class InputChannelConfigStage(InputChannelConfigBase):
     format: str | None = Field(default=None, description="File format of the staged files. Engine default: headerless_csv (validator).")
     input_format_data_json: str | None = Field(default=None, description="Format-specific reader config as json, eg the sheet name for xlsx.")
     is_part_files: bool | None = Field(default=None, description="The file key is a directory of part files rather than a single file.")
+    latest_session_only: bool | None = Field(default=None, description="For a stage channel read through file_key: keeps, in each period folder of the read, only the latest session whose run completed, and skips the other session folders (duplicates, and sessions mapped before a model change). A period whose session folders hold data and none of them a completed run is refused. For a feed with one delivery per period.")
     lookback_periods: str | None = Field(default=None, description="Reads earlier source periods when the input is selected by explicit file_key from the stage area: the key is expanded once per period, substituting ${PERIOD_ID}, and the file listings are concatenated. Format: 'N' reads the current period plus N periods back; 'offset:last' reads current-offset back through current-last ('1:1' is the previous period only). Values may reference env vars; ${PERIOD_ID_TYPE} must name the current period id in the env.")
     merge_channels: list[InputChannelConfig] | None = Field(default=None, description="Input channels merged into this one.")
     multi_columns_input: bool | None = Field(default=None, description="MultiColumnsInput: Indicate that input file must have multiple columns, this is used to detect if the wrong delimiter is used (csv,headerless_csv)")
@@ -1253,11 +1256,38 @@ class TableColumnSpec(_Base):
     rdf_type: str | None = Field(default=None, description="The column's rdf type.")
 
 
+# The column types an output table may name: `schema.PgTypeNames`, the keys of
+# `pgTypes` in jets/schema/schema.go, which the engine refuses anything outside
+# (`ToPgType`, and `validateOutputTableColumnTypes` in jets/compute_pipes). The
+# type is written into the table's DDL, so the list is closed. It applies to
+# output_tables only: a lookup table's columns are never created from it.
+# tests_schema.py holds the two lists equal.
+OUTPUT_TABLE_RDF_TYPES = (
+    "bigint", "bool", "boolean", "bytea", "date", "datetime", "double",
+    "double precision", "int", "int32", "int64", "integer", "jsonb", "long",
+    "resource", "string", "text", "timestamp without time zone", "timestamptz",
+    "uint", "uint32", "uint64", "ulong", "volatile_resource",
+)
+
+
+def _output_table_rdf_types(columns):
+    """Refuse an output table column whose rdf_type is not one of
+    OUTPUT_TABLE_RDF_TYPES. A column with no rdf_type passes, as it does in the
+    engine: only creating the table needs one."""
+    for column in columns or []:
+        if column.rdf_type is not None and column.rdf_type not in OUTPUT_TABLE_RDF_TYPES:
+            raise ValueError(
+                f"output table column {column.name!r}: unknown rdf_type {column.rdf_type!r}; "
+                f"it must be one of {', '.join(OUTPUT_TABLE_RDF_TYPES)}"
+            )
+    return columns
+
+
 class TableSpec(_Base):
     """Shared configuration to load the pipeline output in JetStore DB (postgres)"""
     channel_spec_name: str | None = Field(default=None, description="ChannelSpecName specify the channel spec. Column provides metadata info")
     check_schema_changed: bool | None = Field(default=None, description="Verify whether the table schema changed before the load.")
-    columns: list[TableColumnSpec] | None = Field(default=None, description="Column metadata of the table.")
+    columns: Annotated[list[TableColumnSpec] | None, AfterValidator(_output_table_rdf_types)] = Field(default=None, description="Column metadata of the table.", json_schema_extra={"items": {"properties": {"rdf_type": {"enum": list(OUTPUT_TABLE_RDF_TYPES)}}}})
     comment: str | None = Field(default=None, description="Free text for the reader; ignored by JetStore.")
     key: str = Field(description="Key is the table key for reference by compute pipes steps")
     name: str = Field(description="Name is the table name for reference by compute pipes steps, env var replacement used for table name (e.g., ${CLIENT}_${OBJECT_TYPE})")
@@ -1804,7 +1834,7 @@ for _m in _MODELS:
 
 
 # ---------------------------------------------------------------------------
-# The runtime document (AD.1, jetstore_maintenance_01 Phase 1)
+# The runtime document
 # ---------------------------------------------------------------------------
 #
 # `ComputePipesConfig` above is the **authored** document: the shape an author
@@ -1814,16 +1844,15 @@ for _m in _MODELS:
 # that split as `applicable=no` on `common_runtime_args` and `pipes_config`.
 #
 # **The consequence is that no class here accepted the document a worker node
-# is actually handed**, which is `healthcare_corpus`'s `P9-I28` (read
-# 2026-09-20): a starter marshals a `ComputePipesConfig` with both fields set
+# is actually handed**, as was found on 2026-09-20: a starter marshals a `ComputePipesConfig` with both fields set
 # into `cpipes_execution_status.cpipes_config_json`, and `extra="forbid"`
 # refused every one of them. That was invisible to the corpus walk, because a
 # node never sees an authored document.
 #
 # **The repair is a second projection rather than a wider first one.** Adding
 # the two fields to `ComputePipesConfig` would have reversed a reviewed
-# contract decision and made `negative_suite.json`'s *root pipes_config (I-14
-# runtime shape)* case - which expects `invalid` - start passing: the authored
+# contract decision and made `negative_suite.json`'s *root pipes_config
+# (runtime shape)* case - which expects `invalid` - start passing: the authored
 # schema would then admit a runtime document, which is the one thing the
 # `applicable=no` rows exist to prevent.
 #

@@ -1,8 +1,7 @@
 /**
  * @vitest-environment jsdom
  *
- * **Switching tabs keeps a tab's unsaved edits on screen.** `jetstore_maintenance_02`
- * `I-65`, 2026-10-27. The editor now makes a fresh state for each file it is shown,
+ * **Switching tabs keeps a tab's unsaved edits on screen.** 2026-10-27. The editor now makes a fresh state for each file it is shown,
  * so what it shows on a switch is the `content` the screen passes. That is the
  * tab's current text. It was its saved text, and the old editor's replace
  * transaction then reset the tab to it, so edits were lost by leaving a tab and
@@ -58,8 +57,8 @@ function stubServer() {
       return new Response(
         JSON.stringify({
           token: "t0",
-          name: "Michel",
-          user_email: "michel@artisoft.io",
+          name: "Test User",
+          user_email: "user@example.com",
           is_admin: false,
           capabilities: [WORKSPACE_IDE],
         }),
@@ -102,7 +101,7 @@ function stubServer() {
 
 async function mountIde() {
   const api = new ApiClient("", stubServer());
-  await api.login("michel@artisoft.io", "pw");
+  await api.login("user@example.com", "pw");
   render(
     <MemoryRouter initialEntries={["/workspace"]}>
       <Routes>

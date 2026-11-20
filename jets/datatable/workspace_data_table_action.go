@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -76,9 +77,6 @@ func (ctx *DataTableContext) WorkspaceInsertRows(dataTableAction *DataTableActio
 		// -----------------------------------------------------------------------
 		var gitLog, status string
 		switch {
-		case strings.HasPrefix(dataTableAction.FromClauses[0].Table, "WORKSPACE/"):
-			sqlStmt.Stmt = strings.ReplaceAll(sqlStmt.Stmt, "$SCHEMA", dataTableAction.FromClauses[0].Schema)
-
 		case strings.HasSuffix(dataTableAction.FromClauses[0].Table, "workspace_registry"):
 			// Insert or update workspace entry in workspace_registry table:
 			//	- If folder workspace_name in workspaces root does not exists,
@@ -420,18 +418,18 @@ func (ctx *DataTableContext) WorkspaceInsertRows(dataTableAction *DataTableActio
 			}
 			// The compile option compiles the active workspace once the pull is done,
 			// whichever row was pulled, so it is refused for a row that is not the
-			// active workspace (I-16, as compile_workspace is for I-4) and while rules
-			// unit tests of it are queued or executing (AC.5) -- before the pull
-			// rather than after it, so a refused request pulls nothing.
+			// active workspace (as compile_workspace is) and while rules unit tests
+			// of it are queued or executing -- before the pull rather than after it,
+			// so a refused request pulls nothing. And it is claimed before the pull
+			// (claimPullCompile), so a test requested while the pull runs is refused
+			// rather than racing the compile; the row update below releases the
+			// claim, writing "error" if the pull fails.
 			if hasWorkspaceActionOption(dataTableAction.Data[irow], "wpCompileWorkspaceOption") {
 				rowKey := dataTableAction.Data[irow]["key"]
 				if rowKey == nil {
 					return nil, http.StatusBadRequest, fmt.Errorf("invalid request for pull_workspace, missing key")
 				}
-				if httpStatus, err = refusePullCompileOfAnotherWorkspace(ctx.Dbpool, dataTableAction.WorkspaceName, rowKey); err != nil {
-					return nil, httpStatus, err
-				}
-				if httpStatus, err = refuseCompileWhileTestsRun(ctx.Dbpool); err != nil {
+				if httpStatus, err = claimPullCompile(ctx.Dbpool, dataTableAction.WorkspaceName, rowKey); err != nil {
 					return nil, httpStatus, err
 				}
 			}
@@ -1158,21 +1156,23 @@ func (ctx *DataTableContext) SaveWorkspaceFileContent(dataTableAction *DataTable
 	//  2. **At most one specific validator**, on the most specific suffix match —
 	//     see validatorFor. Absent for a plain .json, which keeps the behaviour
 	//     every existing file type has today.
-	// Warnings travel with the findings and do not block; only errors do. Which
-	// of the two an unreachable state is, is the deployment's call through
-	// JETS_USERFLOW_STRICT_REACHABILITY.
+	// Warnings do not block, only errors do, and the response carries them to
+	// the editor (saveCheckedWorkspaceFile). Which of the two an unreachable
+	// state is, is the deployment's call through JETS_USERFLOW_STRICT_REACHABILITY.
+	//
+	// The rows that check a file against the rest of the workspace read the
+	// workspace's tree as it is on disk, the database's overrides applied. A
+	// workspace whose root does not resolve is checked file by file, and the
+	// write below refuses it.
 	content := wsFileContent.(string)
-	if err = checkWorkspaceFile(fileName, content); err != nil {
-		log.Println(err)
-		httpStatus = http.StatusBadRequest
-		return
+	var workspace fs.FS
+	if root, err := wsfile.ResolveWorkspacePath(workspaceName, "."); err == nil {
+		workspace = os.DirFS(root)
 	}
-	// Write file to local workspace
-	err = wsfile.SaveContent(ctx.Dbpool, workspaceName, fileName, content, signedIn.Email)
-	results = &map[string]any{
-		"file_name": wsFileName,
-	}
-	return
+	return saveCheckedWorkspaceFile(wsFileName, fileName, content, workspace, func() error {
+		// Write file to local workspace
+		return wsfile.SaveContent(ctx.Dbpool, workspaceName, fileName, content, signedIn.Email)
+	})
 }
 
 // SaveWorkspaceClientConfig --------------------------------------------------------------------------

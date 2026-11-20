@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -13,27 +14,34 @@ import (
 // The section contract, from the end that produces it.
 //
 // **No client-side corpus can guard this surface**, and that is the reason these
-// tests exist rather than a reason to write them somewhere cheaper. The Flutter
-// app has five generated corpora and all five are built by walking client
-// registries; the section list is *server data*, so none of them closes over it.
-// The mirror of this file is jetsclient/test/workspace_section_contract_test.dart,
-// which carries the same declaration and the same checksum and drives the client's
-// half against it.
+// tests exist rather than a reason to write them somewhere cheaper. The section
+// list is *server data*, so nothing generated from the client's registries
+// closes over it. The other end is the Workspace IDE's
+// jetsclient_ide/src/screens/sectionContract.ts, which carries the same
+// declaration (SERVER_SECTION_DECLARATION) and the same checksum
+// (EXPECTED_DECLARATION_CHECKSUM), and whose test,
+// jetsclient_ide/src/screens/sectionContract.test.ts, drives the client's half
+// against them: every compiled view the server declares is either rendered or
+// named as not built. The Flutter app's copy,
+// jetsclient/test/workspace_section_contract_test.dart, was this file's mirror
+// until jetsclient/ was deleted on 2026-08-26.
 
-// The checksum of SectionDeclaration(), duplicated in the Dart test named above.
+// The checksum of SectionDeclaration(), duplicated in sectionContract.ts.
 //
 // **Change the section table and this test fails; update only this constant and
-// the Dart test fails.** That is the whole mechanism, and it is the corpus
-// pattern the Flutter suite already uses, generated from the other end.
+// the IDE's test fails.** That is the whole mechanism. The declaration is each
+// section's directory and compiled view, so a change to a section's Filters or
+// Label moves neither end.
 //
 // `runbooks=` added 2026-11-06 (runbooks Phase 1, `AA.4`), the tenth section:
 // fnv1a32:b15ab833 became fnv1a32:d2805ee9. The copy in
-// jetsclient_ide/src/screens/sectionContract.ts moves with it.
-const expectedDeclarationChecksum = "fnv1a32:d2805ee9"
+// jetsclient_ide/src/screens/sectionContract.ts moves with it. `docs=` added
+// 2026-11-13, the eleventh: fnv1a32:d2805ee9 became fnv1a32:1306f111.
+const expectedDeclarationChecksum = "fnv1a32:1306f111"
 
-// fnv1a32 matches jetsclient/test/corpus_support.dart's `checksum`, which is
+// fnv1a32 matches fnv1a32 in jetsclient_ide/src/screens/sectionContract.ts,
 // hand-rolled there for the same reason it is hand-rolled here: this is drift
-// detection between two repositories' worth of code, not a security boundary.
+// detection between two codebases, not a security boundary.
 func fnv1a32(s string) string {
 	var hash uint32 = 0x811c9dc5
 	for _, b := range []byte(s) {
@@ -53,10 +61,55 @@ func TestTheSectionDeclarationIsWhatBothEndsAgreedOn(t *testing.T) {
 	if got != expectedDeclarationChecksum {
 		t.Fatalf("the section contract changed.\n"+
 			"declaration:\n%s\nchecksum: %s, want %s\n\n"+
-			"Update this constant AND the copy in "+
-			"jetsclient/test/workspace_section_contract_test.dart, which decides "+
-			"whether the client needs a form for the section you changed.",
+			"Update this constant AND SERVER_SECTION_DECLARATION and "+
+			"EXPECTED_DECLARATION_CHECKSUM in jetsclient_ide/src/screens/sectionContract.ts, "+
+			"whose test decides whether the IDE renders the compiled view you changed.",
 			SectionDeclaration(), got, expectedDeclarationChecksum)
+	}
+}
+
+// ideSectionContract is the Workspace IDE's copy of the section contract,
+// relative to this package.
+const ideSectionContract = "../../../jetsclient_ide/src/screens/sectionContract.ts"
+
+// The IDE's copy of the declaration is this one, and so is its checksum.
+//
+// **Each end used to check only itself**: this package's test compared
+// SectionDeclaration with expectedDeclarationChecksum, and sectionContract.test.ts
+// compared SERVER_SECTION_DECLARATION with EXPECTED_DECLARATION_CHECKSUM. A
+// section added here, with this file's constant updated, left the IDE's copy
+// behind and both tests passing; the runbooks section was carried across by
+// hand. This test reads the IDE's file, so the two copies cannot drift without
+// a failure on this side, where the section table is changed.
+func TestTheIdeCarriesTheSameSectionDeclaration(t *testing.T) {
+	raw, err := os.ReadFile(ideSectionContract)
+	if err != nil {
+		t.Fatalf("reading the IDE's section contract: %v", err)
+	}
+	src := string(raw)
+	const open = "export const SERVER_SECTION_DECLARATION = ["
+	start := strings.Index(src, open)
+	if start < 0 {
+		t.Fatalf("%s declares no SERVER_SECTION_DECLARATION array", ideSectionContract)
+	}
+	end := strings.Index(src[start:], `].join("\n")`)
+	if end < 0 {
+		t.Fatalf(`%s: SERVER_SECTION_DECLARATION is not an array joined with "\n"`, ideSectionContract)
+	}
+	var lines []string
+	for _, m := range regexp.MustCompile(`"([^"\\]*)"`).FindAllStringSubmatch(src[start+len(open):start+end], -1) {
+		lines = append(lines, m[1])
+	}
+	if got, want := strings.Join(lines, "\n"), SectionDeclaration(); got != want {
+		t.Errorf("the IDE's SERVER_SECTION_DECLARATION differs from SectionDeclaration().\nIDE:\n%s\nserver:\n%s\n"+
+			"Update SERVER_SECTION_DECLARATION and EXPECTED_DECLARATION_CHECKSUM in %s.", got, want, ideSectionContract)
+	}
+	m := regexp.MustCompile(`export const EXPECTED_DECLARATION_CHECKSUM = "([^"]*)"`).FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("%s declares no EXPECTED_DECLARATION_CHECKSUM", ideSectionContract)
+	}
+	if m[1] != expectedDeclarationChecksum {
+		t.Errorf("the IDE's EXPECTED_DECLARATION_CHECKSUM is %s, this package's is %s", m[1], expectedDeclarationChecksum)
 	}
 }
 
@@ -239,6 +292,31 @@ func TestTheTwoRootFilesAreFilesAndCarryNoView(t *testing.T) {
 	}
 }
 
+// The root files carry their size, as every other file node does; the tree
+// showed both as 0 B because these two nodes were built without a stat. A root
+// file that is absent still yields its node, with no size.
+func TestTheRootFilesCarryTheirSize(t *testing.T) {
+	root := t.TempDir()
+	script := "#!/bin/bash\necho compile\n"
+	if err := os.WriteFile(filepath.Join(root, "compile_workspace.sh"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := BuildWorkspaceFileStructure(root, "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sizes := map[string]int64{}
+	for _, n := range nodes[len(nodes)-2:] {
+		sizes[n.PageMatchKey] = n.Size
+	}
+	if got := sizes["compile_workspace.sh"]; got != int64(len(script)) {
+		t.Errorf("compile_workspace.sh: size %d, want %d", got, len(script))
+	}
+	if got, ok := sizes["workspace_control.json"]; !ok || got != 0 {
+		t.Errorf("an absent workspace_control.json: size %d (present %v), want a node of size 0", got, ok)
+	}
+}
+
 // Every asset the installer puts in a workspace is visible in the IDE.
 //
 // **The two lists are in different packages and nothing joined them until this
@@ -293,8 +371,9 @@ func matchesAFilter(name string, filters map[string]bool) bool {
 	return false
 }
 
-// A workspace's READMEs are in the tree, read-only, and nothing else is marked
-// so. jetstore_maintenance_02 `AL.1`, 2026-10-27.
+// A workspace's READMEs and root notes are in the tree, read-only, and nothing
+// else is marked so (2026-10-27). **Except the root README, which is saved
+// since 2026-11-14** (IsRootReadme).
 //
 // The root README is listed after the two root files, and the one under
 // `pipes_config/` inside its section, which is where the four workspaces keep
@@ -343,7 +422,7 @@ func TestReadmesAreListedReadOnly(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"README.md":                true,
+		"README.md":                false,
 		"CHANGES.md":               true,
 		"pipes_config%2FREADME.md": true,
 		"pipes_config%2Fa.pc.json": false,
@@ -370,12 +449,12 @@ func TestReadmesAreListedReadOnly(t *testing.T) {
 	}
 
 	// On the wire the flag is `read_only`, and absent when false.
-	encoded, err := json.Marshal(tail[1])
+	encoded, err := json.Marshal(tail[0])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(encoded), `"read_only":true`) {
-		t.Errorf("a README node encodes as %s, want read_only true", encoded)
+		t.Errorf("a root note node encodes as %s, want read_only true", encoded)
 	}
 	encoded, err = json.Marshal(nodes[len(nodes)-3])
 	if err != nil {
@@ -433,5 +512,24 @@ func TestRunbooksAreListedWithTheirSql(t *testing.T) {
 	want := "runbooks%2Fhealth_check%2Frecent.sql,runbooks%2Fhealth_check.rb.json" // the folder's node sorts first
 	if got := strings.Join(files, ","); got != want {
 		t.Errorf("runbooks files: got %s, want %s", got, want)
+	}
+}
+
+// A root note's suffix is matched without case, as IsReadOnly matches it
+// (2026-11-14): `NOTES.MD` is listed, read-only, and a file with another
+// suffix is not. `readme.md` is listed too, and saved, as the root README.
+func TestARootNoteIsFoundWithoutCase(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"NOTES.MD", "readme.md", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("# n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notes := visitRootNotes(root, "ws")
+	if len(notes) != 2 || notes[0].Label != "NOTES.MD" || notes[1].Label != "readme.md" {
+		t.Fatalf("root notes: got %d, want NOTES.MD and readme.md", len(notes))
+	}
+	if !notes[0].ReadOnly || notes[1].ReadOnly {
+		t.Errorf("read_only: NOTES.MD %v, readme.md %v, want true and false", notes[0].ReadOnly, notes[1].ReadOnly)
 	}
 }

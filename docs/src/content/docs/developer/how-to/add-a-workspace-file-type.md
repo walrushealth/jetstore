@@ -28,12 +28,20 @@ changes discarded.
    `sqlscript.ValidateScript` does for `.sql`.
 3. **Runs the validator `validatorFor` picks**: the row whose suffix ends the file name, compared
    without regard to case, the longest when several match. Any finding of severity `Error` refuses
-   the save; warnings do not.
+   the save; warnings do not, and are returned with the saved file.
 
 A validator is a `wsvalidate.Validator`, a function from the file's content to a list of
 `wsvalidate.Finding` (`jets/wsvalidate/wsvalidate.go`). A finding carries a `Severity`, a `Code`, a
 `Message`, and where it is: `Path`, a JSON Pointer into the document, or `Line`, for a file whose
-coordinates are lines. `describeFindings` prints each with its coordinate in the error the IDE shows.
+coordinates are lines. `describeFindings` prints each error with its coordinate in the error the IDE
+shows. A save with warnings only succeeds, and the response to `save_workspace_file_content` lists them
+under `warnings` (`saveCheckedWorkspaceFile`), each as a `Finding`; the IDE shows them with their
+coordinates in the status banner, in the warning colours. So does a user flow that saves a workspace
+file: `WorkspaceApi.saveFile` returns them to every caller, `FlowStore.save` returns them per document,
+and an action escape that saves shows them through `EscapeHost.warn` (`cpipesTemplateApply` does).
+A new caller of `saveFile` owes the user the same. So a warning is the severity for something
+the user should know about and that does not stop the file working, such as a setting that is
+ignored.
 `jets/wsvalidate` imports nothing, so a validator can live in the package its file type belongs to
 (`jets/userflow`, `jets/runbook`, `jets/optstats`) without importing the HTTP layer.
 
@@ -61,11 +69,30 @@ from the message, need to know where.
 Append it to `workspaceFileValidators`:
 
 ```go
-{".note.json", validateNote},
+{".note.json", nil, validateNote, nil},
 ```
+
+The second field, `applies`, is `nil` for a row that checks every file with its suffix. A row for
+one file, or for one folder, sets it to a function of the workspace-relative path: the `.md` and
+`.mdx` rows apply under `docs/` only (`isDocsPage`), and the `config.json` row to
+`reports/config.json` only (`isReportsConfig`), the file `run_reports` reads, so that no other
+`config.json` is taken for report directives.
+
+The last field, `inWorkspace`, is `nil` for a row whose file can be checked alone. A row whose file
+names other files of the workspace, or is named by them, sets it to a function given the file's
+workspace-relative name, its content and the workspace's tree as an `fs.FS`, which runs once the
+validator has refused nothing: the `.form.json` row warns of a table a form draws that the workspace
+does not hold (`checkFormTables`), the `config.json` row refuses what `run_reports` would refuse in
+the reports files the directives run (`reportsFilesFindings`), and the reports `.sql` row checks a
+reports file against the directives that run it (`reportsSQLFindings`). Its findings are refusals or
+warnings like the validator's.
 
 **Choose a suffix no other row ends with**, and no other row ends with it. `TestSuffixesAreDistinct`
 fails when one suffix ends another, because longest match would then decide between them silently.
+The one exception is a suffix repeated by a row scoped with `applies`: the `.sql` rows for
+`runbooks/` (`isRunbookSQL`) and `reports/` (`isReportsSQL`) share `.sql` with the row for every SQL
+file, and the dispatch prefers a scoped row to an unscoped one of the same suffix. Two scoped rows of
+one suffix must not both apply to a file, which the test probes in every section's folder.
 Prefer a constant from the owning package (`runbook.FileSuffix`, `briefing.DocumentSuffix`) to a
 literal.
 
@@ -98,10 +125,10 @@ tested too, as `TestRunbookGoesThroughTheSavePath` does:
 
 ```go
 func TestNoteGoesThroughTheSavePath(t *testing.T) {
-	if err := checkWorkspaceFile("reports/a.note.json", `{"title": "x"}`); err != nil {
+	if _, err := checkWorkspaceFile("reports/a.note.json", `{"title": "x"}`); err != nil {
 		t.Fatalf("a note with a title must save: %v", err)
 	}
-	if err := checkWorkspaceFile("reports/a.note.json", `{"body": "x"}`); err == nil {
+	if _, err := checkWorkspaceFile("reports/a.note.json", `{"body": "x"}`); err == nil {
 		t.Fatal("a note without a title must not save")
 	}
 }

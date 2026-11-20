@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  *
- * Tests for the application shell (task A.1).
+ * Tests for the application shell.
  *
  * The one worth reading is the last: **routes resolve under the mount prefix.**
  * Vite bakes `base` into asset urls at build time and the router's `basename`
@@ -34,8 +34,8 @@ async function signedIn(
     new Response(
       JSON.stringify({
         token: "t0",
-        name: "Michel",
-        user_email: "michel@artisoft.io",
+        name: "Test User",
+        user_email: "user@example.com",
         is_admin: false,
         capabilities,
         ...build,
@@ -44,7 +44,7 @@ async function signedIn(
     ),
   ) as unknown as typeof fetch;
   const api = new ApiClient("", fetchImpl);
-  await api.login("michel@artisoft.io", "pw");
+  await api.login("user@example.com", "pw");
   return api;
 }
 
@@ -126,7 +126,7 @@ describe("AppShell", () => {
     renderShell(await signedIn(), nav);
     expect(await screen.findByText("screen: workspace")).toBeTruthy();
     expect(screen.getByRole("navigation", { name: "Screens" })).toBeTruthy();
-    expect(screen.getByText("Michel")).toBeTruthy();
+    expect(screen.getByText("Test User")).toBeTruthy();
   });
 
   it("navigates between screens without a reload", async () => {
@@ -162,7 +162,7 @@ describe("AppShell", () => {
       expired
         ? new Response("{}", { status: 401 })
         : new Response(
-            JSON.stringify({ token: "t0", name: "Michel", user_email: "m@x.io", is_admin: true, capabilities: [] }),
+            JSON.stringify({ token: "t0", name: "Test User", user_email: "m@x.io", is_admin: true, capabilities: [] }),
             { status: 200 },
           ),
     ) as unknown as typeof fetch;
@@ -213,7 +213,7 @@ describe("AppShell", () => {
   });
 
   it("disables a nav item the user has no capability for, and keeps it visible", async () => {
-    // **Corrected in A.2.** A.1 filtered the item out of the list; every gated
+    // **Corrected later.** The first shell filtered the item out of the list; every gated
     // control in the Flutter app disables and stays visible
     // (`screens/base_screen.dart:155`), so hiding was a divergence introduced
     // without noticing. An application that looks different to different people,
@@ -280,7 +280,7 @@ describe("AppShell", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 
-  it("shows the build information at the foot of the screen (D05)", async () => {
+  it("shows the build information at the foot of the screen", async () => {
     renderShell(
       await signedIn(["workspace_ide"], { jetstore_version: "1759338000", jetstore_git_sha: "jets_ai-6aeb790" }),
       nav,

@@ -43,14 +43,19 @@ What the fields mean, from `CreateTable`, `UpdateTable` and `ToPgType`:
 
 - **`dataType`** is mapped by `ToPgType`: `int`, `int32` and `bool` to `integer`; `long`, `int64`
   and the unsigned types to `bigint`; `double` to `double precision`; `text`, `string` and the two
-  resource types to `text`; `datetime` to `timestamp without time zone`; `date` to `date`. Anything
-  else is passed through as written, so `jsonb` or `boolean` reach PostgreSQL as they are.
+  resource types to `text`; `datetime` to `timestamp without time zone`; `date` to `date`. `jsonb`,
+  `timestamptz`, `bytea`, `boolean`, and the four PostgreSQL names above, are accepted as they are.
+  **Any other name is refused** and the migration stops naming the table and the column, because the
+  type is written into the DDL; to use another PostgreSQL type, add it to `pgTypes` in
+  `jets/schema/schema.go` (`schema.PgTypeNames` lists the accepted names).
 - **An `int` primary key becomes `SERIAL PRIMARY KEY`**, so `key` above numbers itself.
 - **`default`** is SQL, written as it will appear: `"'main'"` for a string, `"now()"` for a call.
-- **`indexDef` starts with `INDEX <name> ON`**, as every index in the file does. Creating the table
-  writes `CREATE ` in front of it, and altering it writes `CREATE INDEX IF NOT EXISTS ` in front of
-  what follows `INDEX`, so a definition that carries its own `IF NOT EXISTS` creates the table and then
-  breaks the next migration.
+- **`indexDef` starts with `INDEX <name> ON`**, as every index in the file does, or with `UNIQUE
+  INDEX <name> ON` for a unique index. Creating the table writes `CREATE ` in front of it, and altering
+  it writes `CREATE INDEX IF NOT EXISTS ` (or `CREATE UNIQUE INDEX IF NOT EXISTS `) in front of what
+  follows `INDEX`, so a definition that carries its own `IF NOT EXISTS` creates the table and then
+  breaks the next migration. Until 2026-11-14 the alteration did not know `UNIQUE`, and a unique
+  index broke the second migration the same way.
 - **`tableConstraints`** carry a `name` and a full `definition`
   (`CONSTRAINT <name> UNIQUE (...)`). The migration adds a constraint whose name is new and drops one
   whose name has gone.

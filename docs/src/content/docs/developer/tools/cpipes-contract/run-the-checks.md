@@ -17,6 +17,34 @@ is the JetStore repository root (`--code`), and `../../..` is the folder holding
 python3 -m venv .venv && .venv/bin/pip install -e .
 ```
 
+## Name the corpus's workspaces
+
+The matrix, the fragment and repair libraries and the templates name the corpus's
+workspaces by neutral names, `org1_ws`, `org2_ws` and so on, and so do the class prefixes,
+environment variables and file names drawn from them. The workspaces on disk keep their own
+names. `CPIPES_CONTRACT_ALIASES` names a JSON file, kept outside this repository, that maps
+each real token to its neutral one:
+
+```json
+{"acme_ws": "org1_ws", "acme": "org1", "ACME": "ORG1"}
+```
+
+```bash
+export CPIPES_CONTRACT_ALIASES=/path/to/aliases.json
+```
+
+A token matches as a whole word only, so `_`, `:`, `-`, `.` and `/` separate it from its
+neighbours, and the longer of two tokens wins. Everything read out of the corpus and recorded
+or compared (fragments and their citations, repair cases, the configurations the template
+tests reproduce) is read under the neutral names, and a recorded path is opened under the
+real ones. Where two real tokens share a neutral one, the first listed is the one a path
+resolves to. A repair case's diagnosis is commit text, so a ticket number in it is a token
+like any other: list it before committing the case.
+
+Without the file nothing resolves to a workspace on disk: `check --code` sets those citations
+aside as it does for a workspace that is not checked out, `check --corpus` reports each
+exemplar it cannot open, and the tests that read a named workspace's configuration skip.
+
 ## Check the matrix
 
 ```bash
@@ -35,6 +63,28 @@ or two off, pointing at the neighbouring field's declaration, which a reader wou
 Compute a citation by locating the field in the source rather than typing it. A citation that a
 program cannot follow is one nobody will follow either.
 
+A citation into `workspaces/` (generator evidence, which lives in a deployment's own code) resolves
+against the folder holding `workspaces/`: `--corpus` when it is given, otherwise the folder holding
+the `--code` root. Where that workspace is not in the checkout, the citation is not checked and
+`check` prints how many it set aside, so a JetStore-only checkout reports the same problems as a
+full one. The test suite runs the same rule over every citation into the JetStore repository, so a
+change that moves a cited line fails `pytest` as well.
+
+## Carry citations whose lines moved
+
+```bash
+.venv/bin/cpipes-contract relocate --code ../..             # what would move, and what cannot
+.venv/bin/cpipes-contract relocate --code ../.. --apply     # write the carried citations
+```
+
+A line added above a cited declaration moves every citation below it. `relocate` takes each
+citation `--code` rejects, finds the newest version of the cited file in git in which the line did
+name what it cites, and carries that line through the diff to the file as it is now. It keeps the
+result only when the carried line names it; a citation whose line itself changed is left for a
+reader and makes the command exit non-zero. It never touches `review` or `reviewed_hash`, so a
+reviewed row whose citation moved reads "changed since it was reviewed" until it is re-approved
+with `stamp --restamp`.
+
 ## Measure the corpus
 
 ```bash
@@ -45,6 +95,26 @@ program cannot follow is one nobody will follow either.
 
 `corpus` without `--apply` is the drift check and exits non-zero, so a corpus that moves under the
 matrix is caught rather than assumed.
+
+## Regenerate the fragment library
+
+```bash
+.venv/bin/cpipes-contract fragments --corpus ../../..
+```
+
+`fragments` writes `fragments/library.jsonl`, every distinct part of the live corpus keyed by its
+`$defs` entry with its citations, and `fragments/library.curated.jsonl`, the selection that
+authoring prompts and template expansion read. It exits non-zero when a union cannot be resolved,
+when a type's count disagrees with `types.csv`, when the curation drops a part of a type with four
+or fewer corpus instances, or when a historical source named in `recovered_sources.csv` cannot be
+read.
+
+**The library carries configuration and no free text.** Every property the schema describes as
+free text for the reader (`comment`, which JetStore ignores) is removed from a configuration before
+its parts are recorded, at every depth, so a workspace author's prose reaches neither the library,
+nor the examples an authoring prompt shows, nor a configuration expanded from the library. Two parts
+that differed only by a comment are one part. A key named `comment` inside data the schema does not
+describe, such as a site operator's own `config`, is that data and is kept.
 
 ## Run the harness
 

@@ -93,6 +93,7 @@ func (jsComp *JetStoreStackComponents) BuildCpipesLambdas(scope constructs.Const
 			GoBuildFlags: &[]*string{jsii.String(`-buildvcs=false -ldflags "-s -w"`)},
 		},
 		Environment: &map[string]*string{
+			"JETS_IDE_CODE_GUARD":                      jsii.String(os.Getenv("JETS_IDE_CODE_GUARD")), // runs dblogin.Ensure when a restricted login is missing; "off" keeps the guard off
 			"JETS_BUCKET":                              jsComp.SourceBucket.BucketName(),
 			"JETS_DSN_SECRET":                          jsComp.RdsSecret.SecretName(),
 			"CPIPES_DB_POOL_SIZE":                      jsii.String(os.Getenv("CPIPES_DB_POOL_SIZE")),
@@ -157,6 +158,7 @@ func (jsComp *JetStoreStackComponents) BuildCpipesLambdas(scope constructs.Const
 			MemorySize:           jsii.Number(memLimit),
 			EphemeralStorageSize: awscdk.Size_Mebibytes(jsii.Number(10240)),
 			Environment: &map[string]*string{
+				"JETS_IDE_CODE_GUARD":                      jsii.String(os.Getenv("JETS_IDE_CODE_GUARD")), // runs dblogin.Ensure when a restricted login is missing; "off" keeps the guard off
 				"JETS_BUCKET":                              jsComp.SourceBucket.BucketName(),
 				"JETS_DSN_SECRET":                          jsComp.RdsSecret.SecretName(),
 				"CPIPES_DB_POOL_SIZE":                      jsii.String(os.Getenv("CPIPES_DB_POOL_SIZE")),
@@ -207,7 +209,7 @@ func (jsComp *JetStoreStackComponents) BuildCpipesLambdas(scope constructs.Const
 	}
 	if jsComp.DeployCpipesPython {
 
-		// Define the Python cpipes node lambda (P9-T14, P9-T15)
+		// Define the Python cpipes node lambda
 		//
 		// The container image built by dockerfiles/Dockerfile.cpipes_python_lambda, reached
 		// from ECR the way CpipesNativeNodeLambda is and for the same reason: a Python
@@ -253,7 +255,7 @@ func (jsComp *JetStoreStackComponents) BuildCpipesLambdas(scope constructs.Const
 			// resolve. Carrying them would say the switch is read somewhere it is not, which
 			// is the rule the start-sharding lambda's own comment block states about
 			// JETS_DEFAULT_ERROR_REPORTING and INFER_BACKEND. A Python operator needing one
-			// of them receives it as a `site_config` on its own step (I-766), not as an
+			// of them receives it as a `site_config` on its own step, not as an
 			// environment variable on a shared function.
 			Environment: &map[string]*string{
 				"JETS_BUCKET":         jsComp.SourceBucket.BucketName(),

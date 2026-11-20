@@ -118,6 +118,36 @@ TEST_F(ExprOpTest, ExistVisitor1) {
   auto res = boost::apply_visitor(op, rdf::RdfAstType(lhs), rdf::RdfAstType(rhs));
   EXPECT_EQ(res, rdf::RdfAstType(rdf::LInt32(1)));
 }
+// create_resource builds a value the session does not hold until a consequent asserts it
+// (F_expr::to_r_index, then RManager::insert_rdfast). As an operand of another operator in
+// the same expression it does not exist yet: exist gives false, exist_not true, size_of 0.
+// Documented behaviour, not a defect: use create_resource's result as a consequent's term.
+TEST_F(ExprOpTest, CreateResourceAsAnOperand) {
+  auto sess = this->rete_session->rdf_session();
+  auto rmgr = sess->rmgr();
+  rmgr->create_resource("predicate");
+  CreateResourceVisitor create_op(this->rete_session.get(), nullptr);
+  auto created = boost::apply_visitor(create_op, rdf::RdfAstType(rdf::LString("fresh")));
+  ASSERT_EQ(created, rdf::RdfAstType(rdf::NamedResource("fresh")));
+  EXPECT_EQ(rmgr->get_resource(std::string("fresh")), nullptr);
+
+  rdf::RdfAstType rhs(rdf::NamedResource("predicate"));
+  ExistVisitor exist_op(this->rete_session.get(), nullptr);
+  ExistNotVisitor exist_not_op(this->rete_session.get(), nullptr);
+  SizeOfVisitor size_op(this->rete_session.get(), nullptr);
+  EXPECT_EQ(boost::apply_visitor(exist_op, created, rhs), rdf::RdfAstType(rdf::LInt32(0)));
+  EXPECT_EQ(boost::apply_visitor(exist_not_op, created, rhs), rdf::RdfAstType(rdf::LInt32(1)));
+  EXPECT_EQ(boost::apply_visitor(size_op, created, rhs), rdf::RdfAstType(rdf::LInt32(0)));
+  // The operators read the names and leave the operands as they were.
+  EXPECT_EQ(created, rdf::RdfAstType(rdf::NamedResource("fresh")));
+  EXPECT_EQ(rhs, rdf::RdfAstType(rdf::NamedResource("predicate")));
+
+  // Asserted as a consequent's term, it is a resource like any other.
+  auto subject = rmgr->insert_rdfast(created);
+  sess->insert(subject, rmgr->get_resource(std::string("predicate")), rmgr->create_literal("object"));
+  EXPECT_EQ(boost::apply_visitor(exist_op, created, rhs), rdf::RdfAstType(rdf::LInt32(1)));
+  EXPECT_EQ(boost::apply_visitor(size_op, created, rhs), rdf::RdfAstType(rdf::LInt32(1)));
+}
 TEST_F(ExprOpTest, RegexVisitor1) {
   RegexVisitor op(this->rete_session.get(), nullptr);
   rdf::LString lhs("12345");
@@ -528,6 +558,84 @@ TEST_F(ExprOpTest, SubstringOfVisitor2) {
   auto res = boost::apply_visitor(op, rdf::RdfAstType(lhs), rdf::RdfAstType(rhs));
   EXPECT_EQ(res, rdf::RdfAstType(rdf::LString("Allo")));
 }
+// The edges of substring_of: each row is jets:from, jets:length, the text and the
+// result. A cut longer than the text gives an empty string, never the remainder and
+// never an exception; a cut that runs past the end gives what is there.
+TEST_F(ExprOpTest, SubstringOfVisitorEdges) {
+  struct Row { std::int32_t from; std::int32_t length; std::string text; std::string want; };
+  std::vector<Row> rows = {
+    // a positive length within the text
+    {0, 3, "abcdef", "abc"},
+    {2, 2, "abcdef", "cd"},
+    {1, 0, "abcdef", ""},
+    // a negative length within the text drops characters from the end
+    {0, -3, "abcdef", "abc"},
+    {1, -2, "abcdef", "bcd"},
+    {2, -4, "abcdef", ""},
+    // a negative length on a text too short for the cut
+    {0, -3, "ab", ""},
+    {0, -3, "abc", ""},
+    {2, -3, "abcd", ""},
+    {0, -1, "", ""},
+    {0, std::numeric_limits<std::int32_t>::min(), "abc", ""},
+    // jets:from at the end of the text
+    {3, 2, "abc", ""},
+    {3, -1, "abc", ""},
+    {0, 2, "", ""},
+    // jets:from past the end of the text
+    {4, 2, "abc", ""},
+    {10, -1, "abc", ""},
+    {std::numeric_limits<std::int32_t>::max(), 1, "abc", ""},
+    // jets:from + jets:length past the end gives the available characters
+    {1, 10, "abc", "bc"},
+    {0, std::numeric_limits<std::int32_t>::max(), "abc", "abc"},
+    {2, std::numeric_limits<std::int32_t>::max(), "abc", "c"},
+    // a negative jets:from
+    {-1, 2, "abc", ""},
+    {-1, -1, "abc", ""},
+    {std::numeric_limits<std::int32_t>::min(), 2, "abc", ""},
+    // positions and lengths count characters (code points), not bytes: "é" is two
+    // bytes in UTF-8 (C3 A9), "€" three (E2 82 AC), "😀" four (F0 9F 98 80)
+    {0, 1, "\xc3\xa9t\xc3\xa9", "\xc3\xa9"},         // bytes split the "é"
+    {0, 3, "\xc3\xa9t\xc3\xa9", "\xc3\xa9t\xc3\xa9"},
+    {1, 1, "\xc3\xa9t\xc3\xa9", "t"},
+    {2, 5, "\xc3\xa9t\xc3\xa9", "\xc3\xa9"},
+    {3, 1, "\xc3\xa9t\xc3\xa9", ""},                  // past the 3 characters
+    {0, -1, "\xc3\xa9t\xc3\xa9", "\xc3\xa9t"},
+    {1, 1, "5\xe2\x82\xac!", "\xe2\x82\xac"},
+    {0, -1, "5\xe2\x82\xac", "5"},
+    {1, 1, "a\xf0\x9f\x98\x80" "b", "\xf0\x9f\x98\x80"},
+    {2, 1, "a\xf0\x9f\x98\x80" "b", "b"},
+    // no normalisation: "e" and a combining acute (CC 81) are two characters
+    {0, 1, "e\xcc\x81t", "e"},
+    {1, 2, "e\xcc\x81t", "\xcc\x81t"},
+    // a byte that does not start a valid sequence is one character, kept as it is
+    {1, 1, "a\xff" "b", "\xff"},
+    {2, 1, "a\xff" "b", "b"},
+    {0, 2, "\x80\x80", "\x80\x80"},                    // stray continuation bytes
+    {1, 2, "a\xe2\x82", "\xe2\x82"},                   // a truncated sequence: two characters
+    {2, 1, "a\xe2\x82", "\x82"},
+    {0, 2, "\xc0\xafx", "\xc0\xaf"},                    // an overlong form: two characters
+  };
+  auto sess = this->rete_session->rdf_session();
+  auto rmgr = sess->rmgr();
+  SubstringOfVisitor op(this->rete_session.get(), nullptr);
+  for(size_t i = 0; i < rows.size(); ++i) {
+    auto const& r = rows[i];
+    auto name = "config" + std::to_string(i);
+    rdf::r_index config = rmgr->create_resource(name);
+    sess->insert(config, rmgr->jets()->jets__from, rmgr->create_literal(r.from));
+    sess->insert(config, rmgr->jets()->jets__length, rmgr->create_literal(r.length));
+    RDFTTYPE res;
+    try {
+      res = boost::apply_visitor(op, RDFTTYPE(rdf::NamedResource(name)), RDFTTYPE(rdf::LString(r.text)));
+    } catch(std::exception const& e) {
+      res = rdf::LString(std::string("threw: ") + e.what());
+    }
+    EXPECT_EQ(res, RDFTTYPE(rdf::LString(r.want)))
+      << "from " << r.from << ", length " << r.length << ", text \"" << r.text << "\"";
+  }
+}
 TEST_F(ExprOpTest, CharAtVisitor1) {
   CharAtVisitor op(this->rete_session.get(), nullptr);
   rdf::LString lhs("==Allo");
@@ -558,6 +666,80 @@ TEST_F(ExprOpTest, ReplaceCharOfVisitor2) {
   rdf::LString rhs("something`that");
   auto res = boost::apply_visitor(op, rdf::RdfAstType(lhs), rdf::RdfAstType(rhs));
   EXPECT_EQ(res, rdf::RdfAstType(rdf::LString("something_that")));
+}
+
+// replace_char_of reads jets:replace_chars as UTF-8 characters (code points), not bytes.
+// Each row is jets:replace_chars, jets:replace_with, the text and the result; a result of
+// null is "<null>". "\xc3\xa9" is é and "\xc3\xa0" is à: they share the lead byte 0xC3, which
+// a byte-by-byte replacement broke.
+TEST_F(ExprOpTest, ReplaceCharOfVisitorCharacters) {
+  struct Row { std::string chars; std::string with; std::string text; std::string want; };
+  std::vector<Row> rows = {
+    // ASCII, as it always was
+    {"`' ", "_", "it's a `test`", "it_s_a__test_"},
+    {"-.", "", "1-800.555", "1800555"},
+    {"", "_", "unchanged text", "unchanged text"},
+    // the characters are replaced in turn, each over what the earlier turns produced:
+    // the "b"s inserted for "a" are then replaced by "bb" themselves
+    {"ab", "bb", "a", "bbbb"},
+    {"ba", "bb", "a", "bb"},
+    // a character outside ASCII is replaced whole, and only it: à is left as it was
+    {"\xc3\xa9", "e", "\xc3\xa9t\xc3\xa9 \xc3\xa0 Paris", "ete \xc3\xa0 Paris"},
+    {"\xc3\xa9\xc3\xa0", "", "d\xc3\xa9j\xc3\xa0 vu", "dj vu"},
+    // a replacement of more than one byte
+    {"-", "\xe2\x80\x94", "a-b", "a\xe2\x80\x94" "b"},
+    {"\xc3\xa9", "\xc3\xa8", "\xc3\xa9l\xc3\xa8ve", "\xc3\xa8l\xc3\xa8ve"},
+    // three- and four-byte characters: \xe2\x82\xac is the euro sign, \xf0\x9f\x98\x80 an emoji
+    {"\xe2\x82\xac\xf0\x9f\x98\x80", "?", "10\xe2\x82\xac \xf0\x9f\x98\x80!", "10? ?!"},
+    // jets:replace_chars that is not valid UTF-8 is a configuration error: null
+    {"\xc3", "e", "\xc3\xa9t\xc3\xa9", "<null>"},
+    {"a\xa9", "e", "abc", "<null>"},
+    {"\xc0\xaf", "e", "a/b", "<null>"},          // an overlong "/"
+    {"\xed\xa0\x80", "e", "xyz", "<null>"},      // a surrogate, U+D800
+  };
+  auto sess = this->rete_session->rdf_session();
+  auto rmgr = sess->rmgr();
+  auto const* jr = rmgr->jets();
+  ReplaceCharOfVisitor op(this->rete_session.get(), nullptr);
+  for(size_t i = 0; i < rows.size(); ++i) {
+    auto const& r = rows[i];
+    auto name = "rcconfig" + std::to_string(i);
+    rdf::r_index config = rmgr->create_resource(name);
+    sess->insert(config, jr->jets__replace_chars, rmgr->create_literal(r.chars));
+    sess->insert(config, jr->jets__replace_with, rmgr->create_literal(r.with));
+    RDFTTYPE res;
+    try {
+      res = boost::apply_visitor(op, RDFTTYPE(rdf::NamedResource(name)), RDFTTYPE(rdf::LString(r.text)));
+    } catch(std::exception const& e) {
+      res = rdf::LString(std::string("threw: ") + e.what());
+    }
+    if(r.want == "<null>") {
+      EXPECT_EQ(res, RDFTTYPE(rdf::Null())) << "row " << i;
+    } else {
+      EXPECT_EQ(res, RDFTTYPE(rdf::LString(r.want))) << "row " << i;
+    }
+  }
+  // each invalid row inserted its error, which names the text (so the rows' texts differ)
+  int errors = 0;
+  for(auto itor = sess->find(jr->jets__istate, jr->jets__exception); not itor.is_end(); itor.next()) {
+    auto const& v = *itor.get_object();
+    if(v.which() == rdf::rdf_literal_string_t and
+       boost::get<rdf::LString>(v).data.find("not valid UTF-8") != std::string::npos) errors++;
+  }
+  EXPECT_EQ(errors, 4);
+}
+
+TEST_F(ExprOpTest, SplitUtf8Chars) {
+  std::vector<std::string> chars;
+  EXPECT_TRUE(split_utf8_chars("", chars));
+  EXPECT_TRUE(chars.empty());
+  EXPECT_TRUE(split_utf8_chars("a\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80", chars));
+  EXPECT_EQ(chars, (std::vector<std::string>{"a", "\xc3\xa9", "\xe2\x82\xac", "\xf0\x9f\x98\x80"}));
+  for(auto bad: {"\x80", "\xc3", "\xc3\x28", "\xc1\xbf", "\xe0\x80\xaf", "\xed\xbf\xbf",
+                 "\xf0\x80\x80\xaf", "\xf4\x90\x80\x80", "\xf5\x80\x80\x80", "\xff"}) {
+    std::vector<std::string> out;
+    EXPECT_FALSE(split_utf8_chars(bad, out)) << "a " << std::string(bad).size() << "-byte case";
+  }
 }
 
 TEST_F(ExprOpTest, RangeVisitor1) {
@@ -675,7 +857,7 @@ TEST_F(SumValuesOrderTest, IntegersTakeTheWidestTypePresent) {
     [](int i) { return RDFTTYPE(rdf::LUInt32(9 + i)); });
 }
 
-// I-16: a double as text is its shortest round-trip digits, in plain notation. This table
+// A double as text is its shortest round-trip digits, in plain notation. This table
 // is the specification of rdf::double_to_text. It was written as the Go engine's table and
 // shared with it, so that both engines wrote the same text, until the Go engine's retirement
 // (decided 2026-10-22).
@@ -738,7 +920,7 @@ TEST_F(ExprOpTest, EveryOperatorWritesADoubleTheSameWay) {
     RDFTTYPE(rdf::NamedResource("1234567.5")));
 }
 
-// I-33: sorted_head on equal values picks the object first in the tie-break order
+// sorted_head on equal values picks the object first in the tie-break order
 // (tie_break_less), not the first the graph meets. Equal weights, inserted from a
 // different object for each subject, so that some subject meets the later name first.
 TEST_F(ExprOpTest, SortedHeadBreaksATieByName) {
@@ -780,6 +962,77 @@ TEST_F(ExprOpTest, SortedHeadBreaksATieByName) {
     }
   }
   EXPECT_GT(later_first, 0) << "no subject met the later name first: the case is not exercised";
+}
+
+// A sorted_head config missing jets:operator, jets:entity_property or jets:value_property
+// is the visitor's configuration error, a rete_exception. Until 2026-11-13 a config with
+// no jets:operator dereferenced null and crashed the process.
+TEST_F(ExprOpTest, SortedHeadConfigMissingAProperty) {
+  auto * sess = this->rete_session->rdf_session();
+  auto rmgr = sess->rmgr();
+  auto const* jr = rmgr->jets();
+  auto list = rmgr->create_resource("mlist");
+  auto weight = rmgr->create_resource("mweight");
+  auto s = rmgr->create_resource("msubject");
+  auto obj = rmgr->create_resource("mobject");
+  sess->insert(s, list, obj);
+  sess->insert(obj, weight, rmgr->create_literal(int32_t(1)));
+  struct Cfg { char const* name; bool entity; bool value; bool op; };
+  for(auto c: {Cfg{"mcfg_no_op", true, true, false}, Cfg{"mcfg_no_entity", false, true, true},
+               Cfg{"mcfg_no_value", true, false, true}, Cfg{"mcfg_empty", false, false, false}}) {
+    auto cfg = rmgr->create_resource(c.name);
+    if(c.entity) sess->insert(cfg, jr->jets__entity_property, list);
+    if(c.value) sess->insert(cfg, jr->jets__value_property, weight);
+    if(c.op) sess->insert(cfg, jr->jets__operator, rmgr->create_literal(std::string("<")));
+    SortedHeadVisitor head(this->rete_session.get(), nullptr);
+    try {
+      boost::apply_visitor(head, RDFTTYPE(rdf::NamedResource("msubject")), RDFTTYPE(rdf::NamedResource(c.name)));
+      ADD_FAILURE() << c.name << ": no exception";
+    } catch(jets::rete_exception const& e) {
+      EXPECT_NE(std::string(e.what()).find("jets:operator"), std::string::npos) << c.name << ": " << e.what();
+    }
+  }
+}
+
+// A sorted_head config whose jets:entity_property or jets:value_property is a literal
+// rather than a resource is the same configuration error. Until 2026-11-14 the literal
+// was passed to the graph's find, matched no triple, and the head was null, silently.
+TEST_F(ExprOpTest, SortedHeadConfigWithALiteralProperty) {
+  auto * sess = this->rete_session->rdf_session();
+  auto rmgr = sess->rmgr();
+  auto const* jr = rmgr->jets();
+  auto list = rmgr->create_resource("llist");
+  auto weight = rmgr->create_resource("lweight");
+  auto s = rmgr->create_resource("lsubject");
+  auto obj = rmgr->create_resource("lobject");
+  sess->insert(s, list, obj);
+  sess->insert(obj, weight, rmgr->create_literal(int32_t(1)));
+  auto text = [&](char const* v) { return rmgr->create_literal(std::string(v)); };
+  struct Cfg { char const* name; rdf::r_index entity; rdf::r_index value; };
+  for(auto c: {Cfg{"lcfg_entity_text", text("llist"), weight},
+               Cfg{"lcfg_value_text", list, text("lweight")},
+               Cfg{"lcfg_value_int", list, rmgr->create_literal(int32_t(7))},
+               Cfg{"lcfg_both_text", text("llist"), text("lweight")}}) {
+    auto cfg = rmgr->create_resource(c.name);
+    sess->insert(cfg, jr->jets__entity_property, c.entity);
+    sess->insert(cfg, jr->jets__value_property, c.value);
+    sess->insert(cfg, jr->jets__operator, text("<"));
+    SortedHeadVisitor head(this->rete_session.get(), nullptr);
+    try {
+      boost::apply_visitor(head, RDFTTYPE(rdf::NamedResource("lsubject")), RDFTTYPE(rdf::NamedResource(c.name)));
+      ADD_FAILURE() << c.name << ": no exception";
+    } catch(jets::rete_exception const& e) {
+      EXPECT_NE(std::string(e.what()).find("must be resources"), std::string::npos) << c.name << ": " << e.what();
+    }
+  }
+  // the same config with resources gives the head
+  auto cfg = rmgr->create_resource("lcfg_resources");
+  sess->insert(cfg, jr->jets__entity_property, list);
+  sess->insert(cfg, jr->jets__value_property, weight);
+  sess->insert(cfg, jr->jets__operator, text("<"));
+  SortedHeadVisitor head(this->rete_session.get(), nullptr);
+  EXPECT_EQ(boost::apply_visitor(head, RDFTTYPE(rdf::NamedResource("lsubject")), RDFTTYPE(rdf::NamedResource("lcfg_resources"))),
+    RDFTTYPE(rdf::NamedResource("lobject")));
 }
 
 // A tie is the rules' own == (EqVisitor), not "neither is greater": an int 5 and a double
@@ -913,7 +1166,7 @@ TEST(ArithmeticTypes, ADoubleOperandMakesADouble) {
 
 // A beta row, so that a visitor is evaluated as in a session's rule. With no row an
 // operator's catch-all gives null for operands it does not take; with one, it threw, and
-// the session failed (F517). Since Q-93 the catch-alls of + - * /, abs, to_int, to_double,
+// the session failed. Since 2026-10-24 the catch-alls of + - * /, abs, to_int, to_double,
 // lookup and multi_lookup give null either way; other operators' still differ. The rows
 // below that name `in_session`, and the tables that take a SessionRow, are about that
 // difference.
@@ -941,8 +1194,8 @@ RDFTTYPE or_threw(V & op, RDFTTYPE a, RDFTTYPE b)
 // types. It was shared with the Go engine, since retired, whose int and uint were
 // 64-bit, hence int64 and uint64 here. "uint + negative int" and "int + uint past int"
 // gave no result on Go and threw in numeric_cast here, a recorded difference, until
-// Q-85 (2026-10-23): a mixed-integer operation whose right operand does not fit the left
-// operand's type is null (I-134), and so is text plus a named resource (I-109), which
+// 2026-10-23: a mixed-integer operation whose right operand does not fit the left
+// operand's type is null, and so is text plus a named resource, which
 // threw in a session. Each failed the session, and now the rule's consequent sees null.
 TEST(ArithmeticTypes, TheSharedTypingTable) {
   AddVisitor add(nullptr, nullptr);
@@ -973,7 +1226,7 @@ TEST(ArithmeticTypes, TheSharedTypingTable) {
   EXPECT_EQ(ap(add, I(5), RDFTTYPE(rdf::LString("x"))).which(), rdf::rdf_null_t);
   EXPECT_EQ(ap(add, DD(2025, 1, 1), I(1)), DD(2025, 1, 2));
 
-  // Q-85, I-134: the right operand out of the left operand's range is null, in + - * /
+  // The right operand out of the left operand's range is null, in + - * /
   auto I32 = [](int32_t v) { return RDFTTYPE(rdf::LInt32(v)); };
   auto UI32 = [](uint32_t v) { return RDFTTYPE(rdf::LUInt32(v)); };
   auto null = [](RDFTTYPE r) { return r.which() == rdf::rdf_null_t; };
@@ -993,7 +1246,7 @@ TEST(ArithmeticTypes, TheSharedTypingTable) {
   EXPECT_EQ(ap(add, UI32(5), I(big)), UI32(static_cast<uint32_t>(5 + big)));
   EXPECT_EQ(ap(sub, I32(5), UI32(7)), I32(-2));
 
-  // Q-85, I-109: text plus a named resource is null, in a session's rule as with no row
+  // Text plus a named resource is null, in a session's rule as with no row
   SessionRow sr;
   AddVisitor add_in_session(nullptr, sr.row.get());
   EXPECT_TRUE(null(ap(add_in_session, RDFTTYPE(rdf::LString("x")), RDFTTYPE(rdf::NamedResource("r")))));
@@ -1002,7 +1255,7 @@ TEST(ArithmeticTypes, TheSharedTypingTable) {
   // text plus a number still concatenates
   EXPECT_EQ(ap(add_in_session, RDFTTYPE(rdf::LString("x")), I32(5)), RDFTTYPE(rdf::LString("x5")));
 
-  // Q-85 (BL.1b): text with a blank node, null with text and a double with text are
+  // Text with a blank node, null with text and a double with text are
   // null in a session's rule, in either order and in each of + - * /; each threw. Text
   // plus null and text plus a double still concatenate, as they did
   SubsVisitor sub_in_session(nullptr, sr.row.get());
@@ -1027,7 +1280,7 @@ TEST(ArithmeticTypes, TheSharedTypingTable) {
   EXPECT_EQ(ap(add_in_session, text, dbl), RDFTTYPE(rdf::LString("x2.5")));
 }
 
-// Q-85 (BL.1b): to_int of a number out of int32's range is null; numeric_cast threw,
+// to_int of a number out of int32's range is null; numeric_cast threw,
 // in a session's rule as with no row. A number in range is truncated toward zero, as it was
 TEST(ArithmeticTypes, ToIntOutOfRangeIsNull) {
   SessionRow sr;
@@ -1049,10 +1302,10 @@ TEST(ArithmeticTypes, ToIntOutOfRangeIsNull) {
   EXPECT_EQ(ti(rdf::LString(" 42 ")), RDFTTYPE(rdf::LInt32(42)));
 }
 
-// Q-93: every type mismatch of + - * / is null, in a session's rule as with no row: a
+// Every type mismatch of + - * / is null, in a session's rule as with no row: a
 // number with text, a named resource, a blank node or null, either way round, and two
 // operands neither of which the operator takes. Each threw in a session's rule, and the
-// session failed (I-184). Text first in + is concatenation, by design, and is not a
+// session failed. Text first in + is concatenation, by design, and is not a
 // mismatch: "x" + 5 is "x5", while 5 + "x" is null.
 TEST(ArithmeticTypes, EveryTypeMismatchIsNull) {
   SessionRow sr;
@@ -1111,10 +1364,10 @@ TEST(ArithmeticTypes, EveryTypeMismatchIsNull) {
   EXPECT_EQ(or_threw(abs, RDFTTYPE(rdf::LInt32(-5))), RDFTTYPE(rdf::LInt32(5)));
 }
 
-// Q-93: to_int and to_double of what they cannot read are null, in a session's rule as
+// to_int and to_double of what they cannot read are null, in a session's rule as
 // with no row: text that does not read as their type, empty or blank text, null, a named
-// resource, a blank node or a date (I-185); and to_int of a NaN, which converted to
-// int32 by undefined behaviour, numeric_cast not checking it (I-186). Each threw in a
+// resource, a blank node or a date; and to_int of a NaN, which converted to
+// int32 by undefined behaviour, numeric_cast not checking it. Each threw in a
 // session's rule except the NaN, which gave whatever the conversion gave.
 TEST(ArithmeticTypes, ToIntAndToDoubleOfWhatTheyCannotReadIsNull) {
   SessionRow sr;
@@ -1153,7 +1406,7 @@ TEST(ArithmeticTypes, IntegersKeepTheLeftOperandsType) {
   EXPECT_EQ(boost::apply_visitor(div, RDFTTYPE(rdf::LInt32(7)), RDFTTYPE(rdf::LInt32(2))), RDFTTYPE(rdf::LInt32(3)));
 }
 
-// Q-68: == != < <= > >= over numbers. Integers with integers by value (std::cmp_*); any
+// == != < <= > >= over numbers. Integers with integers by value (std::cmp_*); any
 // double operand compares as two doubles, by rdf::is_eq, is_lt, ... (15 significant
 // digits); a NaN or an infinity is never equal or ordered. The table is the comparisons'
 // specification; it was shared with the Go engine, the same rows in both, until its retirement.
@@ -1200,7 +1453,7 @@ TEST(Comparisons, TheSharedTable) {
   }
 }
 
-// Q-69: division by zero. An integer divided by an integer zero is null; it raised
+// Division by zero. An integer divided by an integer zero is null; it raised
 // SIGFPE until 2026-10, which killed the process. A division that involves a double
 // follows IEEE: +inf, -inf, and NaN for 0/0. The table is division's specification: seven
 // rows shared with the Go engine until its retirement, then two mixed integer
@@ -1221,7 +1474,7 @@ TEST(ArithmeticTypes, DivisionByZero) {
   // and an integer divided by a nonzero integer is still integer division
   EXPECT_EQ(q(rdf::LInt32(7), rdf::LInt32(2)), RDFTTYPE(rdf::LInt32(3)));
 
-  // Q-85, I-126: the minimum signed integer divided by -1 is null, as by zero. Its
+  // The minimum signed integer divided by -1 is null, as by zero. Its
   // quotient does not fit the type, and it raised SIGFPE, which killed the process, for
   // int32 and int64 and through the mixed integer types
   auto const i32min = std::numeric_limits<int32_t>::min();
@@ -1237,9 +1490,9 @@ TEST(ArithmeticTypes, DivisionByZero) {
   EXPECT_EQ(q(rdf::LInt64(i64min), rdf::LInt64(2)), RDFTTYPE(rdf::LInt64(i64min / 2)));
 }
 
-// Q-85, I-104: a null lookup key is null, and the session goes on; in a session's rule
+// A null lookup key is null, and the session goes on; in a session's rule
 // it threw. The table is not read: a null key looks nothing up.
-// and so is a blank-node key (BL.1b), which threw likewise
+// and so is a blank-node key, which threw likewise
 TEST(Lookups, ANullKeyIsNull) {
   SessionRow sr;
   LookupVisitor lookup(nullptr, sr.row.get());
@@ -1257,10 +1510,10 @@ TEST(Lookups, ANullKeyIsNull) {
   EXPECT_EQ(ap(multi_lookup, RDFTTYPE(rdf::LString("acme:ProcedureLookup")), bnode_key).which(), rdf::rdf_null_t);
 }
 
-// Q-93: lookup and multi_lookup with a key or a table of a type they do not take are null,
+// Lookup and multi_lookup with a key or a table of a type they do not take are null,
 // in a session's rule as with no row, and look nothing up: a double, a date or a datetime
 // key, and a table named by anything but a resource or text. Each threw in a session's
-// rule (I-184). The rows need no lookup helper, since nothing is looked up.
+// rule. The rows need no lookup helper, since nothing is looked up.
 TEST(Lookups, AKeyOrTableOfAnotherTypeIsNull) {
   SessionRow sr;
   LookupVisitor lookup(nullptr, sr.row.get());
@@ -1284,6 +1537,121 @@ TEST(Lookups, AKeyOrTableOfAnotherTypeIsNull) {
     EXPECT_TRUE(null(ap(lookup, t, RDFTTYPE(rdf::LString("k"))))) << "lookup " << t;
     EXPECT_TRUE(null(ap(multi_lookup, t, RDFTTYPE(rdf::LInt32(7))))) << "multi_lookup " << t;
   }
+}
+
+// char_at at the edges, evaluated as in a session's rule. The index counts characters
+// (code points), as substring_of's positions and length_of do, and a byte that does not
+// start a valid UTF-8 sequence is one character. An index outside the text, past the end
+// or negative, is null,
+// as it always was (substring_of gives "" there; char_at keeps null because a rule can
+// tell the two apart). An index that is not an int, or a lhs that is not text, throws.
+TEST(CharAt, TheEdges) {
+  SessionRow sr;
+  CharAtVisitor op(nullptr, sr.row.get());
+  auto T = [](std::string v) { return RDFTTYPE(rdf::LString(std::move(v))); };
+  auto I = [](std::int32_t v) { return RDFTTYPE(rdf::LInt32(v)); };
+  auto const null = RDFTTYPE(rdf::Null());
+  struct Row { std::string text; std::int32_t index; RDFTTYPE want; };
+  std::vector<Row> const rows = {
+    // within the text
+    {"abc", 0, T("a")},
+    {"abc", 2, T("c")},
+    {" ", 0, T(" ")},
+    // at or past the end
+    {"abc", 3, null},
+    {"abc", 10, null},
+    {"", 0, null},
+    {"abc", std::numeric_limits<std::int32_t>::max(), null},
+    // negative
+    {"abc", -1, null},
+    {"", -1, null},
+    {"abc", std::numeric_limits<std::int32_t>::min(), null},
+    // the index counts characters (code points): "é" is the two bytes C3 A9 in UTF-8,
+    // "€" the three E2 82 AC, "😀" the four F0 9F 98 80
+    {"\xc3\xa9t\xc3\xa9", 0, T("\xc3\xa9")},
+    {"\xc3\xa9t\xc3\xa9", 1, T("t")},
+    {"\xc3\xa9t\xc3\xa9", 2, T("\xc3\xa9")},
+    {"\xc3\xa9t\xc3\xa9", 3, null},
+    {"\xc3\xa9t\xc3\xa9", 4, null},
+    {"\xe2\x82\xac" "5", 0, T("\xe2\x82\xac")},
+    {"\xe2\x82\xac" "5", 1, T("5")},
+    {"\xf0\x9f\x98\x80", 0, T("\xf0\x9f\x98\x80")},
+    {"\xf0\x9f\x98\x80", 1, null},
+    // no normalisation: "e" and a combining acute (CC 81) are two characters
+    {"e\xcc\x81", 1, T("\xcc\x81")},
+    // a byte that does not start a valid sequence is one character, kept as it is
+    {"a\xff" "b", 1, T("\xff")},
+    {"a\xff" "b", 2, T("b")},
+    {"\xa9", 0, T("\xa9")},
+    {"a\xf0\x9f\x98", 1, T("\xf0")},                  // a truncated 4-byte sequence
+    {"a\xf0\x9f\x98", 3, T("\x98")},
+    {"a\xf0\x9f\x98", 4, null},
+  };
+  for(auto const& r: rows) {
+    EXPECT_EQ(or_threw(op, T(r.text), I(r.index)), r.want) << "index " << r.index << ", text \"" << r.text << "\"";
+  }
+  // an index that is not an int, or a lhs that is not text, is the catch-all: it throws in
+  // a session's rule, and is null with no row
+  CharAtVisitor no_row(nullptr, nullptr);
+  std::vector<std::pair<RDFTTYPE, RDFTTYPE>> const not_taken = {
+    {T("abc"), RDFTTYPE(rdf::LInt64(1))}, {T("abc"), RDFTTYPE(rdf::LUInt32(1))},
+    {T("abc"), RDFTTYPE(rdf::LDouble(1.0))}, {T("abc"), T("1")}, {T("abc"), null},
+    {I(123), I(1)}, {null, I(0)},
+  };
+  for(auto const& [a, b]: not_taken) {
+    auto res = or_threw(op, a, b);
+    EXPECT_TRUE(res.which() == rdf::rdf_literal_string_t and
+                boost::get<rdf::LString>(res).data.rfind("threw: ", 0) == 0) << a << " char_at " << b << ": " << res;
+    EXPECT_EQ(boost::apply_visitor(no_row, a, b), null) << a << " char_at " << b;
+  }
+}
+
+// length_of counts characters as TextUnits does, so that it agrees with substring_of and
+// char_at: a code point of any length in UTF-8 is one, a byte that does not start a valid
+// sequence is one, and there is no normalisation. Until 2026-11-14 it counted bytes.
+TEST(LengthOf, CountsCharacters) {
+  SessionRow sr;
+  LengthOfVisitor op(nullptr, sr.row.get());
+  std::vector<std::pair<std::string, std::int32_t>> const rows = {
+    {"", 0},
+    {"abc", 3},
+    {"\xc3\xa9t\xc3\xa9", 3},                // "été", 5 bytes
+    {"5\xe2\x82\xac", 2},                    // "5€", 4 bytes
+    {"\xf0\x9f\x98\x80!", 2},                // "😀!", 5 bytes
+    {"e\xcc\x81", 2},                        // "e" and a combining acute: no normalisation
+    {"a\xff" "b", 3},                        // an invalid byte
+    {"\x80\x80", 2},                         // stray continuation bytes
+    {"a\xe2\x82", 3},                        // a truncated sequence: each byte
+    {"\xed\xa0\x80", 3},                     // a surrogate: each byte
+  };
+  for(auto const& [text, want]: rows) {
+    EXPECT_EQ(or_threw(op, RDFTTYPE(rdf::LString(text))), RDFTTYPE(rdf::LInt32(want))) << "\"" << text << "\"";
+  }
+}
+
+// The three operators together, in the shape of a rule that drops a one-letter suffix
+// from a name: (?e name ?v).(?e nameLength ?n) with ?n = (length_of ?v), and the filter
+// [((?v char_at (?n - 2)) == " ")]. On a name whose last letter is not ASCII, counting
+// bytes put ?n - 2 inside that letter and the suffix was missed; counting characters
+// finds the space. And a cut of the first ?n - 2 characters keeps the name whole.
+TEST(TextUnits, ANameSuffixAfterANonAsciiLetter) {
+  SessionRow sr;
+  LengthOfVisitor length_of(nullptr, sr.row.get());
+  SubsVisitor minus(nullptr, sr.row.get());
+  CharAtVisitor char_at(nullptr, sr.row.get());
+  EqVisitor eq(nullptr, sr.row.get());
+  auto suffix_space = [&](std::string const& name) {
+    auto n = or_threw(length_of, RDFTTYPE(rdf::LString(name)));
+    auto at = or_threw(minus, n, RDFTTYPE(rdf::LInt32(2)));
+    auto c = or_threw(char_at, RDFTTYPE(rdf::LString(name)), at);
+    return rdf::to_bool(or_threw(eq, c, RDFTTYPE(rdf::LString(" "))));
+  };
+  EXPECT_TRUE(suffix_space("Ana B"));
+  EXPECT_TRUE(suffix_space("Ana \xc3\x89"));             // "Ana É"
+  EXPECT_TRUE(suffix_space("Jos\xc3\xa9 \xc3\x89"));       // "José É"
+  EXPECT_TRUE(suffix_space("Zo\xc3\xab \xc5\x81"));        // "Zoë Ł"
+  EXPECT_FALSE(suffix_space("Jos\xc3\xa9"));              // "José": no suffix
+  EXPECT_FALSE(suffix_space("A"));                        // index -1: null, not " "
 }
 
 }   // namespace

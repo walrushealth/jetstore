@@ -26,7 +26,7 @@
 // priority list withdraws the v4 row that inferred topMatch: an odd loop through
 // negation, which has no fixed point under correct truth maintenance.
 //
-// Until 2026-10 it terminated, because of two LEGACY defects kept by Michel's decision
+// Until 2026-10 it terminated, because of two LEGACY defects kept by a decision
 // of 2026-10-09: an aggregate consequent was recomputed on retraction (sorted_head over
 // the now empty list gave null, so the topMatch inferred was not retracted), and a
 // withdrawn row was never erased from its relation, so the v4 row was not re-admitted
@@ -35,7 +35,7 @@
 // vertex visit limit (-10), with replay alone every merge is undone, and with erasure
 // alone it ends merged.
 //
-// The defects were deleted in 2026-10, with the mode (jets/rete/README.md, the
+// The defects were deleted in 2026-10, with the mode (docs/src/content/docs/developer/engine/rule-engine/, the
 // retraction record): the workspace's loop rules had been rewritten so as not to rely on
 // them, and computed the same under the fixed behaviour. So THIS IS NOW A SPECIFICATION:
 // the shape does not terminate, and the vertex visit limit is what stops it. A rule set

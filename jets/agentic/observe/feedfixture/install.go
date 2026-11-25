@@ -18,9 +18,11 @@ import (
 // JetsapiTables are the jetsapi tables Install creates, from jets_schema.json,
 // when they are not already there. pipeline_execution_status is read by the
 // claim-set statement, which finds the run that wrote a delivery's claims there;
-// Install leaves it empty and InstallUnderPipelineRuns writes it.
+// Install leaves it empty and InstallUnderPipelineRuns writes it. The statement
+// reads that run's retain window drops from pipeline_execution_details, which
+// both leave empty.
 var JetsapiTables = []string{"source_config", "input_registry", "source_period", "file_key_staging",
-	"pipeline_execution_status"}
+	"pipeline_execution_status", "pipeline_execution_details"}
 
 // RunProcessName is the process_name of the pipeline runs
 // InstallUnderPipelineRuns writes.
@@ -87,6 +89,18 @@ func InstallUnderPipelineRuns(ctx context.Context, pool *pgxpool.Pool) (Counts, 
 		return Counts{}, err
 	}
 	return install(ctx, pool, Feeds(), profiles, true)
+}
+
+// InstallNotJudged writes the not-judged feeds (NotJudgedFeeds) the way
+// Install writes the base feeds, with their profiles from
+// NotJudgedProfilesPath. It leaves the other feeds alone, so it is called
+// after Install, or alone, and may be called again.
+func InstallNotJudged(ctx context.Context, pool *pgxpool.Pool) (Counts, error) {
+	profiles, err := NotJudgedProfiles()
+	if err != nil {
+		return Counts{}, err
+	}
+	return install(ctx, pool, NotJudgedFeeds(), profiles, false)
 }
 
 // InstallReprocessing writes the re-processing feeds (ReprocessingFeeds) the
@@ -335,12 +349,15 @@ func installClaims(ctx context.Context, tx pgx.Tx, f Feed, underRuns bool) (int,
 			session = RunSessionOf(session)
 		}
 		for i, c := range claims {
-			var paid any
+			var paid, dos any
 			if c.PaidAmount != nil {
 				paid = *c.PaidAmount
 			}
+			if !c.ServiceDate.IsZero() {
+				dos = c.ServiceDate
+			}
 			rows = append(rows, []any{fmt.Sprintf("%s-%05d", session, i), session,
-				c.ClaimID, int32(c.LineNumber), c.ServiceDate, c.MemberID, paid, c.LoadBatch})
+				c.ClaimID, int32(c.LineNumber), dos, c.MemberID, paid, c.LoadBatch})
 		}
 	}
 	for _, d := range f.Deliveries {

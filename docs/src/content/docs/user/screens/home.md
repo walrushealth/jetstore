@@ -26,7 +26,7 @@ Every run of a pipeline, the latest first: one row per run, with its status, its
 session. What each status means is in
 [Pipelines and sessions](/docs/user/concepts/pipelines-and-sessions/#what-a-runs-status-means).
 
-![The Pipelines Status tab: nine runs of the CI client's pipelines, three completed Map runs and six runs of Patient_Profile_Template, pending, submitted, interrupted, failed, errors and completed, with the tab's buttons above them; the runs that ended show an input count, and the three Map runs an input span.](../../../../assets/screenshots/user/screens/home/pipelines-status.png)
+![The Pipelines Status tab: nine runs of the CI client's pipelines, three completed Map runs and six runs of Patient_Profile_Template, pending, submitted, interrupted, failed, errors and completed, with the tab's buttons above them; the runs that ended show an input count, and two Map runs a dropped count, 13 and 0; the span columns are further right.](../../../../assets/screenshots/user/screens/home/pipelines-status.png)
 
 | Column | What it holds |
 |---|---|
@@ -38,8 +38,10 @@ session. What each status means is in
 | Session ID | the run's own session: every row it writes carries it |
 | Input Session | the session of the main input the run read |
 | Request ID | the request the input was registered under, when it came with one |
-| Input Count | the records read from the run's main input, counted at its first step (`reducing00`); filled in when the run ends |
+| Input Count | the records read from the run's main input, counted at its first step (`reducing00`), before the mapping step's retain window drops any; filled in when the run ends |
+| Dropped Count | the records the pipeline's mapping step dropped because they fell outside its `retain_window`, a window of days around the file's date, or had no date in the window's column (see [the operators](/docs/developer/compute-pipes/operators/)); filled in when the run ends, 0 when the window dropped nothing, and empty when the pipeline has no window |
 | Input Span | the days from the earliest to the latest date in one column of the mapped records, the column the pipeline's mapping step names in `calculate_span_of` (see [the operators](/docs/developer/compute-pipes/operators/)); filled in when the run ends, and empty when the pipeline names no such column or no record had a date in it |
+| Core Span | the days covered by the middle 98% of those dates, from the 1st percentile to the 99th: a feed that sends a few records far older than the rest has a long Input Span and a short Core Span. Like Input Span it is measured on the records as delivered, before the retain window drops any, so together they show how much more history a feed sent than the run kept; filled in when the run ends, and empty when Input Span is |
 | User | who started the run |
 | Duration | from the run's start to its last update; for a run still going, so far |
 | Loaded At | when the run's row was last updated; the tab sorts on it |
@@ -65,6 +67,7 @@ The second and third rows act on the selected run:
 | **View Process Errors** | Opens [Process Errors](/docs/user/screens/process-errors/) for the run: the errors its rules raised. | |
 | **View Failure Details** | Opens the run's failure details, the error that stopped it, in a dialog. Empty for a run that did not fail. | |
 | **View Execution Stats** | Opens [CPIPES Execution Details](/docs/user/screens/cpipes-execution-details/) for the run: each step, totalled over its nodes. | |
+| **View Incident** | Opens the incidents the run belongs to on the [Incidents](/docs/user/screens/incidents/#finding-a-sessions-incidents) screen: those on its own session, and those of the input it read, including the incident of a feed's standing condition that the input's delivery joined without an incident of its own. | `agent_supervision` |
 | **Resubmit** | Runs the selected run again, on the same inputs, under a new session, with the workspace as it is compiled now. Refused when an input the run read has since been deleted. | `run_pipelines` |
 | **Get Run Manifest** | Copies the run's manifest to the clipboard: the document a completed run writes, describing what it delivered (see [The run manifest](/docs/developer/compute-pipes/run-manifest/)). Enabled for a completed run only. | `jetstore_read` |
 | **Get Schema Event** | Copies to the clipboard the schema event of the input the run was started from. | `jetstore_read` |
